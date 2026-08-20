@@ -1,41 +1,176 @@
 # System Overview
 
-The Lightspeed Hub is a Kubernetes operator that runs on a central hub cluster and manages a fleet of spoke clusters for OpenShift Lightspeed. It automates spoke onboarding, coordinates fleet-wide agentic operations, aggregates proposals and alerts across the fleet, and monitors spoke health. The design goal is "install hub, add spokes, done" — minimizing per-cluster setup friction that has historically blocked OLS adoption at fleet scale.
+The Lightspeed Hub is a Kubernetes operator that runs on a central hub cluster and manages a fleet of spoke clusters for OpenShift Lightspeed multicluster operations. It coordinates fleet-wide agentic workflows through a single control plane, brokering credentials to spoke clusters and orchestrating standalone adapters on the hub.
 
 ## Behavioral Rules
 
 ### System Role
 
-1. The hub operator runs on a single designated hub cluster.
-2. Spoke clusters are represented by `SpokeCluster` custom resources on the hub.
-3. The hub coordinates fleet-wide operations but does not replace spoke-local agentic operators — each spoke runs its own lightspeed-agentic-operator for local proposal execution.
+1. The hub operator is a single Go binary (controller-runtime) running on a designated hub cluster.
+2. Spoke clusters are represented by `SpokeCluster` CRs (cluster-scoped, `hub.openshift.io/v1alpha1`).
+3. The hub is both control plane and compute plane (hub-managed mode). Sandboxes run on the hub, targeting spoke clusters via remote kube-api.
+4. The hub does NOT reimplement the agentic engine. AgenticRun reconciliation, sandbox lifecycle, and approval enforcement stay in the agentic-operator. The hub adds the "which cluster" dimension.
+5. [PLANNED] Spoke-local mode: hub is control plane only, full agentic stack deployed to spoke. See `multicluster-ops.md` in parent spec.
+
+### Controllers
+
+6. **SpokeCluster Controller** — reconciles SpokeCluster CRs. Validates spoke connectivity, deploys standalone adapter pods on hub, manages credential lifecycle, updates status conditions.
+7. **Credential Broker** — pluggable interface returning a `rest.Config` for a given spoke. Implementations: `SecretCredentialSource` (stored kubeconfig), `MCECredentialSource` (MCE cluster-proxy). [PLANNED] `BackplaneCredentialSource`.
+8. **Adapter Orchestrator** — manages standalone adapter Deployments on the hub. One adapter pod per spoke per adapter type, configured with spoke kubeconfig for remote event source access.
 
 ### Spoke Onboarding
 
-4. When a `SpokeCluster` CR is created, the hub MUST automatically provision the spoke: deploy the alerts adapter, configure credentials, and begin health monitoring.
-5. Spoke onboarding MUST be idempotent — re-applying a SpokeCluster CR must converge to the desired state without side effects.
-6. The hub MUST validate spoke connectivity before marking a spoke as ready.
+9. When a SpokeCluster CR is created, the hub MUST validate spoke connectivity via the credential broker before marking the spoke as ready.
+10. Spoke onboarding MUST be idempotent — re-applying a SpokeCluster CR must converge without side effects.
+11. The hub MUST deploy standalone adapter pods for the spoke on the hub.
 
 ### Spoke Health Monitoring
 
-7. The hub MUST continuously monitor spoke health (API server reachability, agent operator status, adapter status).
-8. Spoke health status MUST be reflected in the `SpokeCluster` CR status conditions.
-9. A spoke transitioning to unhealthy MUST NOT block operations on other spokes.
+12. The hub MUST continuously monitor spoke health (API server reachability via the credential broker).
+13. Spoke health status MUST be reflected in SpokeCluster status conditions (`Connected`, `AdaptersReady`).
+14. A spoke transitioning to unhealthy MUST NOT block operations on other spokes.
 
-### Fleet-Wide Proposal Coordination
+### Dependencies
 
-10. The hub MUST aggregate proposals from all spoke clusters into a unified fleet view.
-11. Fleet-wide approval policies defined on the hub apply across all spokes.
-12. The hub MUST support hub-initiated proposals that target specific spokes or groups of spokes.
+15. The agentic-operator MUST be installed on the hub cluster — it reconciles AgenticRuns with `spec.targetCluster` set.
+16. The lightspeed-operator MUST be installed on the hub cluster — it provides OLSConfig, lightspeed-service, and LLM provider configuration.
+17. For MCE credential source: MCE MUST be installed on the hub cluster.
 
-## Configuration Surface
+### Deployment
 
-| Field/Flag | Type | Default | Description |
-|---|---|---|---|
-| Defined by the SpokeCluster CRD and hub operator config — to be specified as the CRD is designed. ||||
+18. The hub operator is deployed via Helm chart.
+19. All hub operator workloads run in the `openshift-lightspeed` namespace.
+
+## CRD: HubConfig
+
+API group: `hub.openshift.io/v1alpha1`. Cluster-scoped singleton.
+
+**When `clusterRegistryMode: secret`:**
+```yaml
+apiVersion: hub.openshift.io/v1alpha1
+kind: HubConfig
+metadata:
+  name: cluster
+spec:
+  clusterRegistryMode: secret
+```
+
+**When `clusterRegistryMode: mce`:**
+```yaml
+apiVersion: hub.openshift.io/v1alpha1
+kind: HubConfig
+metadata:
+  name: cluster
+spec:
+  clusterRegistryMode: mce
+  mce:
+    selector:
+      matchLabels:
+        lightspeed-enabled: "true"
+```
+
+### Spec Fields
+
+| Field | Required | Description |
+|---|---|---|
+| `clusterRegistryMode` | Yes | How spoke clusters are registered and credentials managed. `secret`: manual SpokeCluster CRs with stored kubeconfigs. `mce`: auto-discover from MCE ManagedCluster CRs. |
+| `mce.selector.matchLabels` | When mode=mce | Label selector filtering which ManagedCluster CRs become spokes. Only ManagedClusters matching these labels are auto-discovered. When omitted, all ManagedClusters are included. |
+
+### Validation
+
+20. CRD validation MUST require `metadata.name` equals `cluster` (singleton pattern, same as ApprovalPolicy and AgenticOLSConfig).
+21. `clusterRegistryMode` MUST be one of `secret` or `mce`.
+22. When `clusterRegistryMode: secret`, a validating webhook MUST reject SpokeCluster CRs with non-secret credential sources.
+
+### MCE Auto-Discovery
+
+23. When `clusterRegistryMode: mce`, the hub operator MUST watch MCE `ManagedCluster` CRs and automatically create/delete `SpokeCluster` CRs for matching clusters.
+24. The `mce.selector.matchLabels` field filters which ManagedClusters are included. When omitted, all ManagedClusters are included.
+25. Auto-created SpokeCluster CRs MUST have `spec.apiServer` and `spec.credentialSource.mce.managedClusterName` populated from the ManagedCluster CR.
+26. When a ManagedCluster is deleted or its labels no longer match the selector, the corresponding SpokeCluster CR MUST be deleted (triggering standard decommission cleanup).
+27. When `clusterRegistryMode: mce`, manually created SpokeCluster CRs MUST be rejected by a validating webhook — MCE is the single source of truth.
+28. Auto-created SpokeCluster CRs MUST have an owner label (`hub.openshift.io/managed-by: mce-auto-discovery`) to distinguish them from manually created ones.
+
+## CRD: SpokeCluster
+
+API group: `hub.openshift.io/v1alpha1`. Cluster-scoped, one per spoke.
+
+**When `clusterRegistryMode: secret` (user creates manually):**
+```yaml
+apiVersion: hub.openshift.io/v1alpha1
+kind: SpokeCluster
+metadata:
+  name: prod-rosa-east
+spec:
+  apiServer: "https://api.prod-rosa-east.example.com:6443"
+  credentialSource:
+    secret:
+      name: prod-rosa-east-credentials
+      namespace: openshift-lightspeed
+status:
+  conditions:
+    - type: Connected
+      status: "True"
+    - type: AdaptersReady
+      status: "True"
+```
+
+**When `clusterRegistryMode: mce` (auto-created by hub operator):**
+```yaml
+apiVersion: hub.openshift.io/v1alpha1
+kind: SpokeCluster
+metadata:
+  name: prod-rosa-east
+  labels:
+    hub.openshift.io/managed-by: mce-auto-discovery
+spec:
+  apiServer: "https://api.prod-rosa-east.example.com:6443"
+  credentialSource:
+    mce:
+      managedClusterName: "prod-rosa-east"
+status:
+  conditions:
+    - type: Connected
+      status: "True"
+    - type: AdaptersReady
+      status: "True"
+```
+
+### Spec Fields
+
+| Field | Required | Description |
+|---|---|---|
+| `apiServer` | Yes | Spoke cluster's kube-api server URL |
+| `credentialSource` | Yes | Exactly one of: `secret`, `mce`. Must match HubConfig `clusterRegistryMode`. |
+| `credentialSource.secret.name` | When mode=secret | Name of the K8s Secret containing the spoke kubeconfig |
+| `credentialSource.secret.namespace` | When mode=secret | Namespace of the credential Secret |
+| `credentialSource.mce.managedClusterName` | When mode=mce | MCE ManagedCluster name for cluster-proxy access |
+
+### Status Conditions
+
+| Condition | Meaning |
+|---|---|
+| `Connected` | Hub can reach spoke kube-api via the credential source |
+| `AdaptersReady` | All standalone adapter pods are running for this spoke |
+
+### Planned Status Conditions
+
+| Condition | Meaning |
+|---|---|
+| `CRDInstalled` | AgenticRun CRD installed on spoke for embedded adapters |
+| `WatcherActive` | Dedicated watcher running for spoke AgenticRun CRs |
+| `AgenticStackReady` | Spoke-local mode: full agentic stack deployed to spoke |
+
+## What the Hub Operator Does NOT Do
+
+- LLM provider configuration (stays in OLSConfig)
+- AgenticRun reconciliation (stays in agentic-operator)
+- Sandbox management (stays in agentic-operator)
+- MCP server definitions (stays in OLSConfig)
+- Approval policy enforcement (stays in agentic-operator)
 
 ## Planned Changes
 
 | Ticket | Summary |
 |---|---|
-| — | Initial implementation — all rules above are planned |
+| OLS-2984 | Initial implementation — hub operator MVP |
