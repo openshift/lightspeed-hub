@@ -1,35 +1,43 @@
 # Fleet Coordination
 
-Covers how the hub coordinates agentic operations across multiple spoke clusters.
+How the hub coordinates agentic operations across multiple spoke clusters.
 
 ## Behavioral Rules
 
-### Proposal Aggregation
+### AgenticRun Creation (Hub-Managed Mode)
 
-1. The hub MUST collect proposals from all ready spoke clusters and present them in a unified fleet view.
-2. Each aggregated proposal MUST be traceable to its originating spoke cluster.
-3. Proposal aggregation MUST tolerate individual spoke failures — an unreachable spoke must not prevent aggregation from other spokes.
+1. Standalone adapters (e.g., alerts-adapter) run on the hub and create AgenticRun CRs on the hub with `spec.targetCluster` set to the SpokeCluster name.
+2. The agentic-operator on the hub reconciles these AgenticRuns. It resolves the SpokeCluster, obtains spoke kubeconfig via the credential broker, creates ephemeral SA on spoke, and starts sandbox pods on the hub.
+3. [PLANNED] Embedded adapters (CVO, ACS, CMO) create AgenticRun CRs locally on the spoke. The hub's dedicated spoke watcher detects them and the agentic-operator reconciles them from the hub.
 
-### Fleet-Wide Policies
+### Fleet Visibility
 
-4. Approval policies defined on the hub MUST apply across all registered spokes.
-5. Spoke-local policies (if any) are additive — a proposal must satisfy both hub-level and spoke-level policies.
-6. Policy updates on the hub MUST propagate to spokes within a bounded time window.
+4. The hub console displays AgenticRuns from all spokes in a unified fleet view.
+5. Each AgenticRun is traceable to its originating spoke via `spec.targetCluster` (standalone adapters) or the spoke watcher source (embedded adapters).
+6. Fleet visibility MUST tolerate individual spoke failures — an unreachable spoke must not prevent viewing AgenticRuns from other spokes.
 
-### Hub-Initiated Proposals
+### Approval
 
-7. The hub MUST support creating proposals that target a specific spoke or a set of spokes.
-8. Hub-initiated proposals MUST go through the same approval flow as spoke-originated proposals.
-9. The hub MUST track execution status of hub-initiated proposals across their target spokes.
+7. All AgenticRun approvals happen in the hub console. This is the single approval surface regardless of which spoke the run targets.
+8. The existing ApprovalPolicy on the hub applies to all AgenticRuns, including those targeting spokes.
 
 ### Alert Aggregation
 
-10. Alerts from spoke adapters MUST flow to the hub for fleet-wide visibility.
-11. The hub MAY deduplicate alerts that fire identically across multiple spokes (e.g., identical CVE alerts).
-12. Alert routing rules on the hub determine whether an alert triggers a spoke-local proposal, a hub-level review, or both.
+9. Each spoke has its own alerts-adapter pod running on the hub, polling the spoke's AlertManager.
+10. Alerts from different spokes create separate AgenticRun CRs on the hub — no cross-spoke deduplication in MVP.
+11. [PLANNED] Fleet-wide alert deduplication for identical alerts firing across multiple spokes.
+
+### [PLANNED] Spoke-Local Mode Fleet Coordination
+
+12. [PLANNED] In spoke-local mode, AgenticRun CRs live on the spoke. The hub operator syncs MirrorAgenticRun CRs to the hub for console visibility.
+13. [PLANNED] Approval on MirrorAgenticRun CRs is propagated back to the spoke's AgenticRun by the hub operator via remote kube-api.
+14. [PLANNED] Spoke sync controller pushes AgenticRun status updates to the hub.
 
 ## Planned Changes
 
 | Ticket | Summary |
 |---|---|
-| — | All rules are planned — initial design |
+| OLS-2984 | Initial implementation — fleet coordination MVP |
+| — | Embedded adapter support: hub watches spoke AgenticRun CRs |
+| — | Spoke-local mode: MirrorAgenticRun CRs, approval routing |
+| — | Fleet-wide alert deduplication |
