@@ -8,13 +8,14 @@ All specifications live in `.ai/spec/`. Start with `.ai/spec/README.md` for proj
 
 ## Commands
 
-No Makefile yet — repo is greenfield. Expected targets once scaffolded:
-
 ```bash
 make build      # Build the operator binary
 make test       # Run unit tests (always use make, not go test directly)
 make lint       # golangci-lint
-make generate   # Regenerate CRD manifests and deepcopy
+make generate   # Regenerate DeepCopy implementations
+make manifests  # Regenerate CRD YAML and RBAC ClusterRole
+make fmt        # Run go fmt
+make vet        # Run go vet
 ```
 
 ## Conventions
