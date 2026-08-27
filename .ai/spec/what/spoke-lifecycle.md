@@ -16,11 +16,11 @@ Full lifecycle of a spoke cluster from registration through decommission.
 ### Spoke Provisioning
 
 5. After successful connectivity validation, the hub operator MUST provision the spoke with the following resources via remote kube-api:
-   - Create `openshift-lightspeed` namespace on the spoke (if it does not exist).
-   - Create `lightspeed-agent` ServiceAccount in `openshift-lightspeed` on the spoke.
-   - Create `cluster-reader` ClusterRoleBinding binding `lightspeed-agent` to the `cluster-reader` ClusterRole.
-   - Create `cluster-monitoring-view` ClusterRoleBinding binding `lightspeed-agent` to the `cluster-monitoring-view` ClusterRole.
-6. These spoke-side resources establish the reader RBAC pattern that the agentic-operator's `addReaderSubject` uses — per-step SAs are added to these same ClusterRoleBindings to inherit cluster-wide read access. This is identical to how `lightspeed-agent` is used in single-cluster mode.
+   - Create `openshift-lightspeed-managed` namespace on the spoke (if it does not exist). This namespace is separate from `openshift-lightspeed` because the spoke may have its own standalone OLS installation in `openshift-lightspeed` — using a separate namespace avoids SA and RBAC collisions.
+   - Create `lightspeed-agent` ServiceAccount in `openshift-lightspeed-managed` on the spoke.
+   - Create `cluster-reader` ClusterRoleBinding binding `openshift-lightspeed-managed/lightspeed-agent` to the `cluster-reader` ClusterRole.
+   - Create `cluster-monitoring-view` ClusterRoleBinding binding `openshift-lightspeed-managed/lightspeed-agent` to the `cluster-monitoring-view` ClusterRole.
+6. These spoke-side resources establish the reader RBAC pattern that the agentic-operator's `addReaderSubject` uses — per-step SAs are added to these same ClusterRoleBindings to inherit cluster-wide read access. This is identical to how `lightspeed-agent` is used in single-cluster mode, but in the `openshift-lightspeed-managed` namespace to avoid conflicts with a spoke-local OLS installation.
 7. The hub operator MUST deploy standalone adapter pods on the hub for the spoke (e.g., alerts-adapter configured to poll spoke's AlertManager via remote kube-api).
 8. Adapter pods run on the hub, not on the spoke. They use the standing kubeconfig for remote API access.
 9. Provisioning status MUST be tracked in SpokeCluster status conditions: `Connected`, `AdaptersReady`.
@@ -103,7 +103,7 @@ The `proxy-url` field is handled transparently by Go's HTTP transport. Consumers
 21. Deleting a SpokeCluster CR MUST trigger cleanup:
     - Delete standalone adapter pods on the hub for this spoke.
     - Delete the standing kubeconfig Secret on the hub (auto-GC via owner reference).
-    - Delete spoke-side resources (`lightspeed-agent` SA, ClusterRoleBindings, `openshift-lightspeed` namespace) via remote kube-api using the standing kubeconfig.
+    - Delete spoke-side resources (`lightspeed-agent` SA, ClusterRoleBindings, `openshift-lightspeed-managed` namespace) via remote kube-api using the standing kubeconfig.
     - [PLANNED] Delete AgenticRun CRD and related resources on the spoke (for embedded adapter support).
 22. Cleanup MUST be best-effort — if the spoke is unreachable, hub-side cleanup MUST still proceed and the CR deletion MUST succeed (with a warning condition) rather than blocking indefinitely. Spoke-side resources will remain but are harmless (read-only SA, no secrets).
 23. Finalizers MUST be used to ensure cleanup runs before CR removal.
