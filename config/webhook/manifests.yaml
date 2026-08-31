@@ -1,0 +1,26 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-hub-openshift-io-v1alpha1-spokecluster
+  failurePolicy: Fail
+  name: vspokecluster.hub.openshift.io
+  rules:
+  - apiGroups:
+    - hub.openshift.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - spokeclusters
+  sideEffects: None

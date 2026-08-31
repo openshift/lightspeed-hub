@@ -9,3 +9,25 @@ layout:
 projectName: lightspeed-hub
 repo: github.com/openshift/lightspeed-hub
 version: "3"
+resources:
+- api:
+    crdVersion: v1
+    namespaced: false
+  controller: false
+  domain: openshift.io
+  group: hub
+  kind: HubConfig
+  path: github.com/openshift/lightspeed-hub/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: false
+  controller: false
+  domain: openshift.io
+  group: hub
+  kind: SpokeCluster
+  path: github.com/openshift/lightspeed-hub/api/v1alpha1
+  version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1

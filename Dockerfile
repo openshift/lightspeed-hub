@@ -8,7 +8,9 @@ COPY go.mod go.mod
 COPY go.sum go.sum
 RUN go mod download
 
+COPY api/ api/
 COPY cmd/ cmd/
+COPY internal/ internal/
 
 # this directory is checked by ecosystem-cert-preflight-checks task in Konflux
 COPY LICENSE /licenses/

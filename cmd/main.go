@@ -29,6 +29,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+
+	hubv1alpha1 "github.com/openshift/lightspeed-hub/api/v1alpha1"
+	"github.com/openshift/lightspeed-hub/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -36,6 +39,7 @@ var scheme = runtime.NewScheme()
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(hubv1alpha1.AddToScheme(scheme))
 
 	// +kubebuilder:scaffold:scheme
 }
@@ -79,6 +83,13 @@ func main() {
 	}
 
 	// +kubebuilder:scaffold:builder
+
+	if err := ctrl.NewWebhookManagedBy(mgr, &hubv1alpha1.SpokeCluster{}).
+		WithValidator(webhook.NewSpokeClusterValidator(mgr.GetClient())).
+		Complete(); err != nil {
+		log.Error(err, "unable to create webhook", "webhook", "SpokeCluster")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		log.Error(err, "unable to set up health check")

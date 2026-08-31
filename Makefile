@@ -84,7 +84,7 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes.
 
 .PHONY: manifests
 manifests: controller-gen ## Regenerate CRD YAML and RBAC ClusterRole.
-	$(CONTROLLER_GEN) rbac:roleName=hub-operator-manager-role crd paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
+	$(CONTROLLER_GEN) rbac:roleName=hub-operator-manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac output:webhook:artifacts:config=config/webhook
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
