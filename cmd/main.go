@@ -31,6 +31,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	hubv1alpha1 "github.com/openshift/lightspeed-hub/api/v1alpha1"
+	"github.com/openshift/lightspeed-hub/internal/controller"
+	"github.com/openshift/lightspeed-hub/internal/credential"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -78,6 +80,16 @@ func main() {
 	})
 	if err != nil {
 		log.Error(err, "unable to create manager")
+		os.Exit(1)
+	}
+
+	credSource := credential.NewSecretCredentialSource(mgr.GetClient())
+	if err := controller.NewSpokeClusterReconciler(
+		mgr.GetClient(),
+		credSource,
+		namespace,
+	).SetupWithManager(mgr); err != nil {
+		log.Error(err, "unable to create controller", "controller", "SpokeCluster")
 		os.Exit(1)
 	}
 
