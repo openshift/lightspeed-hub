@@ -73,6 +73,8 @@ func (v *SpokeClusterValidator) validate(ctx context.Context, sc *hubv1alpha1.Sp
 		if sc.Spec.CredentialSource.MCE == nil {
 			return nil, fmt.Errorf("%w: expected 'mce', got 'secret'", ErrCredentialSourceMismatch)
 		}
+	default:
+		return nil, fmt.Errorf("%w: unknown clusterRegistryMode %q", ErrCredentialSourceMismatch, hubConfig.Spec.ClusterRegistryMode)
 	}
 
 	return nil, nil
