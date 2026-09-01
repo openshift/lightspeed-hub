@@ -1,0 +1,3 @@
+resources:
+- bases/hub.openshift.io_hubconfigs.yaml
+- bases/hub.openshift.io_spokeclusters.yaml
