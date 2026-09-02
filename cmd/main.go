@@ -93,6 +93,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := controller.NewHubConfigReconciler(
+		mgr.GetClient(),
+	).SetupWithManager(mgr); err != nil {
+		log.Error(err, "unable to create controller", "controller", "HubConfig")
+		os.Exit(1)
+	}
+
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
