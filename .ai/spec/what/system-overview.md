@@ -80,7 +80,6 @@ spec:
 
 20. CRD validation MUST require `metadata.name` equals `cluster` (singleton pattern, same as ApprovalPolicy and AgenticOLSConfig).
 21. `clusterRegistryMode` MUST be one of `secret` or `mce`.
-22. When `clusterRegistryMode: secret`, a validating webhook MUST reject SpokeCluster CRs with non-secret credential sources.
 
 ### MCE Auto-Discovery
 
