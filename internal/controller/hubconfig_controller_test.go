@@ -47,6 +47,10 @@ func newFakeHubConfigClient(objs ...client.Object) client.Client {
 		Build()
 }
 
+func newHubConfigReconciler(c client.Client) *HubConfigReconciler {
+	return NewHubConfigReconciler(c, c)
+}
+
 func newHubConfig() *hubv1alpha1.HubConfig {
 	return &hubv1alpha1.HubConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
@@ -85,7 +89,7 @@ func newTestSpokeCluster(name string) *hubv1alpha1.SpokeCluster {
 func TestHubConfigReconcile_AddsFinalizer(t *testing.T) {
 	hc := newHubConfig()
 	c := newFakeHubConfigClient(hc)
-	r := NewHubConfigReconciler(c)
+	r := newHubConfigReconciler(c)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
 	if err != nil {
@@ -113,7 +117,7 @@ func TestHubConfigReconcile_AddsFinalizer(t *testing.T) {
 func TestHubConfigReconcile_NotDeleting(t *testing.T) {
 	hc := newHubConfigWithFinalizer()
 	c := newFakeHubConfigClient(hc)
-	r := NewHubConfigReconciler(c)
+	r := newHubConfigReconciler(c)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
 	if err != nil {
@@ -129,7 +133,7 @@ func TestHubConfigReconcile_DeleteCascadesSpokeClusters(t *testing.T) {
 	spoke1 := newTestSpokeCluster("spoke-1")
 	spoke2 := newTestSpokeCluster("spoke-2")
 	c := newFakeHubConfigClient(hc, spoke1, spoke2)
-	r := NewHubConfigReconciler(c)
+	r := newHubConfigReconciler(c)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
 	if err != nil {
@@ -151,7 +155,7 @@ func TestHubConfigReconcile_DeleteCascadesSpokeClusters(t *testing.T) {
 func TestHubConfigReconcile_DeleteNoSpokes(t *testing.T) {
 	hc := newHubConfigDeleting()
 	c := newFakeHubConfigClient(hc)
-	r := NewHubConfigReconciler(c)
+	r := newHubConfigReconciler(c)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
 	if err != nil {
@@ -176,7 +180,7 @@ func TestHubConfigReconcile_DeleteNoSpokes(t *testing.T) {
 
 func TestHubConfigReconcile_NotFound(t *testing.T) {
 	c := newFakeHubConfigClient()
-	r := NewHubConfigReconciler(c)
+	r := newHubConfigReconciler(c)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
 	if err != nil {

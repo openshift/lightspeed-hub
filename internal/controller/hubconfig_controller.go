@@ -36,13 +36,15 @@ const (
 
 // +kubebuilder:rbac:groups=hub.openshift.io,resources=hubconfigs,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=hub.openshift.io,resources=hubconfigs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=hub.openshift.io,resources=spokeclusters,verbs=list;delete
 
 type HubConfigReconciler struct {
-	client client.Client
+	client    client.Client
+	apiReader client.Reader
 }
 
-func NewHubConfigReconciler(c client.Client) *HubConfigReconciler {
-	return &HubConfigReconciler{client: c}
+func NewHubConfigReconciler(c client.Client, apiReader client.Reader) *HubConfigReconciler {
+	return &HubConfigReconciler{client: c, apiReader: apiReader}
 }
 
 func (r *HubConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -72,12 +74,13 @@ func (r *HubConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
+	// Use apiReader (uncached) to avoid race where the cache hasn't synced
+	// SpokeCluster objects yet, which would cause premature finalizer removal.
 	var spokeList hubv1alpha1.SpokeClusterList
-	if err := r.client.List(ctx, &spokeList); err != nil {
+	if err := r.apiReader.List(ctx, &spokeList); err != nil {
 		return ctrl.Result{}, fmt.Errorf("listing SpokeCluster CRs: %w", err)
 	}
 
-	remaining := 0
 	for i := range spokeList.Items {
 		sc := &spokeList.Items[i]
 		if sc.DeletionTimestamp.IsZero() {
@@ -86,11 +89,11 @@ func (r *HubConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				if client.IgnoreNotFound(err) != nil {
 					logger.Error(err, "failed to delete SpokeCluster", "spoke", sc.Name)
 				}
-				continue
 			}
 		}
-		remaining++
 	}
+
+	remaining := len(spokeList.Items)
 
 	if remaining > 0 {
 		logger.Info("waiting for SpokeCluster CRs to drain", "remaining", remaining)
