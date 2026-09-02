@@ -29,6 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+
+	hubv1alpha1 "github.com/openshift/lightspeed-hub/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -36,6 +38,7 @@ var scheme = runtime.NewScheme()
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(hubv1alpha1.AddToScheme(scheme))
 
 	// +kubebuilder:scaffold:scheme
 }
