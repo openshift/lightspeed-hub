@@ -44,10 +44,14 @@ const (
 	unhealthyRequeueAfter = 30 * time.Second
 	spokeDialTimeout      = 10 * time.Second
 
-	conditionTypeConnected    = "Connected"
-	reasonConnectionSucceeded = "ConnectionSucceeded"
-	reasonConnectionFailed    = "ConnectionFailed"
-	reasonCredentialError     = "CredentialError"
+	conditionTypeConnected   = "Connected"
+	conditionTypeProvisioned = "Provisioned"
+
+	reasonConnectionSucceeded   = "ConnectionSucceeded"
+	reasonConnectionFailed      = "ConnectionFailed"
+	reasonCredentialError       = "CredentialError"
+	reasonProvisioningSucceeded = "ProvisioningSucceeded"
+	reasonProvisioningFailed    = "ProvisioningFailed"
 )
 
 // SpokeClusterReconciler reconciles a SpokeCluster object
@@ -126,7 +130,7 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	cfg, err := r.credentialSource.GetRESTConfig(ctx, &sc)
 	if err != nil {
 		log.Error(err, "Failed to get credentials", "spoke", sc.Name)
-		r.setConnectedCondition(&sc, metav1.ConditionFalse, reasonCredentialError, err.Error())
+		r.setCondition(&sc, conditionTypeConnected, metav1.ConditionFalse, reasonCredentialError, err.Error())
 		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
 			log.Error(updateErr, "Failed to update status after credential error")
 		}
@@ -166,31 +170,38 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Check connectivity
 	if err := r.CheckConnectivity(cfg); err != nil {
 		log.Error(err, "Connectivity check failed", "spoke", sc.Name)
-		r.setConnectedCondition(&sc, metav1.ConditionFalse, reasonConnectionFailed, err.Error())
+		r.setCondition(&sc, conditionTypeConnected, metav1.ConditionFalse, reasonConnectionFailed, err.Error())
 		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
 			log.Error(updateErr, "Failed to update status after connectivity check")
 		}
 		return ctrl.Result{RequeueAfter: unhealthyRequeueAfter}, nil
 	}
 
+	// Connectivity succeeded — set Connected=True
+	r.setCondition(&sc, conditionTypeConnected, metav1.ConditionTrue, reasonConnectionSucceeded, "spoke API server is reachable")
+
 	// Create spoke client for provisioning
 	spokeClient, err := r.NewSpokeClient(cfg)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("creating spoke client: %w", err)
+		r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionFalse, reasonProvisioningFailed, fmt.Sprintf("failed to create spoke client: %v", err))
+		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
+			log.Error(updateErr, "Failed to update status")
+		}
+		return ctrl.Result{RequeueAfter: unhealthyRequeueAfter}, nil
 	}
 
 	// Provision spoke-side resources (idempotent)
 	if err := provisioner.Provision(ctx, spokeClient); err != nil {
 		log.Error(err, "Failed to provision spoke", "spoke", sc.Name)
-		r.setConnectedCondition(&sc, metav1.ConditionFalse, reasonConnectionFailed, fmt.Sprintf("Provisioning failed: %v", err))
+		r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionFalse, reasonProvisioningFailed, err.Error())
 		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
 			log.Error(updateErr, "Failed to update status after provisioning error")
 		}
 		return ctrl.Result{RequeueAfter: unhealthyRequeueAfter}, nil
 	}
 
-	// Set Connected=True
-	r.setConnectedCondition(&sc, metav1.ConditionTrue, reasonConnectionSucceeded, "Spoke cluster is reachable and provisioned")
+	// Provisioning succeeded
+	r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionTrue, reasonProvisioningSucceeded, "spoke-side resources provisioned")
 	if err := r.client.Status().Update(ctx, &sc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
 	}
@@ -248,9 +259,9 @@ func (r *SpokeClusterReconciler) reconcileDelete(ctx context.Context, sc *hubv1a
 	return ctrl.Result{}, nil
 }
 
-func (r *SpokeClusterReconciler) setConnectedCondition(sc *hubv1alpha1.SpokeCluster, status metav1.ConditionStatus, reason, message string) {
+func (r *SpokeClusterReconciler) setCondition(sc *hubv1alpha1.SpokeCluster, condType string, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&sc.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeConnected,
+		Type:               condType,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,

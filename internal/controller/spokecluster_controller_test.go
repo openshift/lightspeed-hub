@@ -40,13 +40,16 @@ import (
 )
 
 const (
-	spokeClusterFinalizer     = "hub.openshift.io/spoke-cleanup"
-	healthyRequeueAfter       = 5 * time.Minute
-	unhealthyRequeueAfter     = 30 * time.Second
-	conditionTypeConnected    = "Connected"
-	reasonConnectionSucceeded = "ConnectionSucceeded"
-	reasonConnectionFailed    = "ConnectionFailed"
-	reasonCredentialError     = "CredentialError"
+	spokeClusterFinalizer    = "hub.openshift.io/spoke-cleanup"
+	healthyRequeueAfter      = 5 * time.Minute
+	unhealthyRequeueAfter    = 30 * time.Second
+	conditionTypeConnected   = "Connected"
+	conditionTypeProvisioned = "Provisioned"
+
+	reasonConnectionSucceeded   = "ConnectionSucceeded"
+	reasonConnectionFailed      = "ConnectionFailed"
+	reasonProvisioningSucceeded = "ProvisioningSucceeded"
+	reasonCredentialError       = "CredentialError"
 )
 
 // fakeCredentialSource is a mock CredentialSource for testing
@@ -189,10 +192,15 @@ var _ = Describe("SpokeClusterReconciler", func() {
 			err = hubClient.Get(ctx, types.NamespacedName{Name: sc.Name}, &updated)
 			Expect(err).NotTo(HaveOccurred())
 
-			condition := meta.FindStatusCondition(updated.Status.Conditions, conditionTypeConnected)
-			Expect(condition).NotTo(BeNil())
-			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
-			Expect(condition.Reason).To(Equal(reasonConnectionSucceeded))
+			connCondition := meta.FindStatusCondition(updated.Status.Conditions, conditionTypeConnected)
+			Expect(connCondition).NotTo(BeNil())
+			Expect(connCondition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(connCondition.Reason).To(Equal(reasonConnectionSucceeded))
+
+			provCondition := meta.FindStatusCondition(updated.Status.Conditions, conditionTypeProvisioned)
+			Expect(provCondition).NotTo(BeNil())
+			Expect(provCondition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(provCondition.Reason).To(Equal(reasonProvisioningSucceeded))
 
 			// Check standing kubeconfig was created
 			secretKey := types.NamespacedName{
@@ -555,9 +563,19 @@ current-context: spoke
 				NamespacedName: types.NamespacedName{Name: sc.Name},
 			})
 
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("creating spoke client"))
-			Expect(result.RequeueAfter).To(BeZero())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(unhealthyRequeueAfter))
+
+			var updated hubv1alpha1.SpokeCluster
+			Expect(hubClient.Get(ctx, types.NamespacedName{Name: sc.Name}, &updated)).To(Succeed())
+
+			connCond := meta.FindStatusCondition(updated.Status.Conditions, conditionTypeConnected)
+			Expect(connCond).NotTo(BeNil())
+			Expect(connCond.Status).To(Equal(metav1.ConditionTrue))
+
+			provCond := meta.FindStatusCondition(updated.Status.Conditions, conditionTypeProvisioned)
+			Expect(provCond).NotTo(BeNil())
+			Expect(provCond.Status).To(Equal(metav1.ConditionFalse))
 		})
 	})
 })
