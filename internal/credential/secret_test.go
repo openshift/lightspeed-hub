@@ -145,6 +145,32 @@ func TestSecretCredentialSource_GetRESTConfig(t *testing.T) {
 			errMsg:  "has no secret credential source",
 		},
 		{
+			name:  "kubeconfig without static credentials rejected",
+			spoke: spokeWithSecret("admin-kubeconfig", "openshift-lightspeed"),
+			secrets: []client.Object{
+				adminSecret("admin-kubeconfig", "openshift-lightspeed", map[string][]byte{
+					"kubeconfig": []byte(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://127.0.0.1:6443
+  name: spoke
+users:
+- user: {}
+  name: spoke-user
+contexts:
+- context:
+    cluster: spoke
+    user: spoke-user
+  name: spoke
+current-context: spoke
+`),
+				}),
+			},
+			wantErr: true,
+			errMsg:  "must contain a token or client certificate",
+		},
+		{
 			name:  "invalid kubeconfig data",
 			spoke: spokeWithSecret("admin-kubeconfig", "openshift-lightspeed"),
 			secrets: []client.Object{

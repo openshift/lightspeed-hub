@@ -166,8 +166,17 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("creating standing kubeconfig: %w", err)
 	}
 
-	// Check connectivity
-	if err := r.CheckConnectivity(cfg); err != nil {
+	// Parse the saved standing kubeconfig to validate connectivity with the
+	// stored credentials, not the original. This catches exec-based kubeconfigs
+	// that work locally but produce an empty standing kubeconfig.
+	standingCfg, err := clientcmd.RESTConfigFromKubeConfig(standingSecret.Data[credential.KubeconfigKey])
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("parsing standing kubeconfig: %w", err)
+	}
+	standingCfg.Timeout = spokeDialTimeout
+
+	// Check connectivity using the standing kubeconfig
+	if err := r.CheckConnectivity(standingCfg); err != nil {
 		log.Error(err, "Connectivity check failed", "spoke", sc.Name)
 		r.setCondition(&sc, conditionTypeConnected, metav1.ConditionFalse, reasonConnectionFailed, err.Error())
 		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
@@ -179,8 +188,8 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Connectivity succeeded — set Connected=True
 	r.setCondition(&sc, conditionTypeConnected, metav1.ConditionTrue, reasonConnectionSucceeded, "spoke API server is reachable")
 
-	// Create spoke client for provisioning
-	spokeClient, err := r.NewSpokeClient(cfg)
+	// Create spoke client using standing kubeconfig for provisioning
+	spokeClient, err := r.NewSpokeClient(standingCfg)
 	if err != nil {
 		r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionFalse, reasonProvisioningFailed, fmt.Sprintf("failed to create spoke client: %v", err))
 		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
