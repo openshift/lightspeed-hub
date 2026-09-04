@@ -25,13 +25,16 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	hubv1alpha1 "github.com/openshift/lightspeed-hub/api/v1alpha1"
 	"github.com/openshift/lightspeed-hub/internal/credential"
@@ -43,14 +46,18 @@ const (
 	healthyRequeueAfter   = 5 * time.Minute
 	spokeDialTimeout      = 10 * time.Second
 
+	conditionTypeReady       = "Ready"
 	conditionTypeConnected   = "Connected"
 	conditionTypeProvisioned = "Provisioned"
 
-	reasonConnectionSucceeded   = "ConnectionSucceeded"
-	reasonConnectionFailed      = "ConnectionFailed"
-	reasonCredentialError       = "CredentialError"
-	reasonProvisioningSucceeded = "ProvisioningSucceeded"
-	reasonProvisioningFailed    = "ProvisioningFailed"
+	reasonManaged                  = "Managed"
+	reasonHubConfigMissing         = "HubConfigMissing"
+	reasonCredentialSourceMismatch = "CredentialSourceMismatch"
+	reasonConnectionSucceeded      = "ConnectionSucceeded"
+	reasonConnectionFailed         = "ConnectionFailed"
+	reasonCredentialError          = "CredentialError"
+	reasonProvisioningSucceeded    = "ProvisioningSucceeded"
+	reasonProvisioningFailed       = "ProvisioningFailed"
 )
 
 // SpokeClusterReconciler reconciles a SpokeCluster object
@@ -59,12 +66,10 @@ type SpokeClusterReconciler struct {
 	credentialSource  credential.CredentialSource
 	operatorNamespace string
 
-	// Mockable dependencies for testing
 	NewSpokeClient    func(cfg *rest.Config) (client.Client, error)
 	CheckConnectivity func(cfg *rest.Config) error
 }
 
-// NewSpokeClusterReconciler creates a new SpokeClusterReconciler with default dependencies
 func NewSpokeClusterReconciler(hubClient client.Client, credSource credential.CredentialSource, operatorNamespace string) *SpokeClusterReconciler {
 	return &SpokeClusterReconciler{
 		client:            hubClient,
@@ -98,7 +103,6 @@ func defaultCheckConnectivity(cfg *rest.Config) error {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
-// Reconcile reconciles a SpokeCluster CR
 func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
@@ -125,6 +129,36 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	// Check HubConfig exists
+	var hubConfig hubv1alpha1.HubConfig
+	if err := r.client.Get(ctx, client.ObjectKey{Name: "cluster"}, &hubConfig); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("No HubConfig found, unmanaging spoke", "spoke", sc.Name)
+			r.cleanupSpokeResources(ctx, &sc)
+			r.setCondition(&sc, conditionTypeReady, metav1.ConditionFalse, reasonHubConfigMissing, "HubConfig 'cluster' not found")
+			if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
+				log.Error(updateErr, "Failed to update status")
+			}
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("getting HubConfig: %w", err)
+	}
+
+	// Check credential source matches HubConfig mode
+	if !r.credentialSourceMatchesMode(&sc, &hubConfig) {
+		log.Info("Credential source does not match HubConfig mode, unmanaging spoke", "spoke", sc.Name,
+			"mode", hubConfig.Spec.ClusterRegistryMode)
+		r.cleanupSpokeResources(ctx, &sc)
+		r.setCondition(&sc, conditionTypeReady, metav1.ConditionFalse, reasonCredentialSourceMismatch,
+			fmt.Sprintf("credential source does not match clusterRegistryMode %q", hubConfig.Spec.ClusterRegistryMode))
+		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
+			log.Error(updateErr, "Failed to update status")
+		}
+		return ctrl.Result{}, nil
+	}
+
+	r.setCondition(&sc, conditionTypeReady, metav1.ConditionTrue, reasonManaged, "spoke is managed by hub")
+
 	// Get credentials via broker
 	cfg, err := r.credentialSource.GetRESTConfig(ctx, &sc)
 	if err != nil {
@@ -136,7 +170,6 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	// Set dial timeout on REST config
 	cfg.Timeout = spokeDialTimeout
 
 	// Create or update standing kubeconfig Secret
@@ -145,12 +178,10 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("building standing kubeconfig: %w", err)
 	}
 
-	// Try Create first (idempotent pattern: Create + handle AlreadyExists)
 	err = r.client.Create(ctx, standingSecret)
 	if err == nil {
 		log.Info("Created standing kubeconfig", "spoke", sc.Name, "secret", standingSecret.Name)
 	} else if apierrors.IsAlreadyExists(err) {
-		// Already exists — Get then Update (credentials may have rotated)
 		var existingSecret corev1.Secret
 		secretKey := client.ObjectKey{Name: standingSecret.Name, Namespace: standingSecret.Namespace}
 		if err := r.client.Get(ctx, secretKey, &existingSecret); err != nil {
@@ -166,16 +197,13 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("creating standing kubeconfig: %w", err)
 	}
 
-	// Parse the saved standing kubeconfig to validate connectivity with the
-	// stored credentials, not the original. This catches exec-based kubeconfigs
-	// that work locally but produce an empty standing kubeconfig.
+	// Validate connectivity with the saved standing kubeconfig
 	standingCfg, err := clientcmd.RESTConfigFromKubeConfig(standingSecret.Data[credential.KubeconfigKey])
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("parsing standing kubeconfig: %w", err)
 	}
 	standingCfg.Timeout = spokeDialTimeout
 
-	// Check connectivity using the standing kubeconfig
 	if err := r.CheckConnectivity(standingCfg); err != nil {
 		log.Error(err, "Connectivity check failed", "spoke", sc.Name)
 		r.setCondition(&sc, conditionTypeConnected, metav1.ConditionFalse, reasonConnectionFailed, err.Error())
@@ -185,10 +213,9 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	// Connectivity succeeded — set Connected=True
 	r.setCondition(&sc, conditionTypeConnected, metav1.ConditionTrue, reasonConnectionSucceeded, "spoke API server is reachable")
 
-	// Create spoke client using standing kubeconfig for provisioning
+	// Provision spoke-side resources
 	spokeClient, err := r.NewSpokeClient(standingCfg)
 	if err != nil {
 		r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionFalse, reasonProvisioningFailed, fmt.Sprintf("failed to create spoke client: %v", err))
@@ -198,7 +225,6 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("creating spoke client: %w", err)
 	}
 
-	// Provision spoke-side resources (idempotent)
 	if err := provisioner.Provision(ctx, spokeClient); err != nil {
 		log.Error(err, "Failed to provision spoke", "spoke", sc.Name)
 		r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionFalse, reasonProvisioningFailed, err.Error())
@@ -208,7 +234,6 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("provisioning spoke: %w", err)
 	}
 
-	// Provisioning succeeded
 	r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionTrue, reasonProvisioningSucceeded, "spoke-side resources provisioned")
 	if err := r.client.Status().Update(ctx, &sc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
@@ -225,39 +250,8 @@ func (r *SpokeClusterReconciler) reconcileDelete(ctx context.Context, sc *hubv1a
 		return ctrl.Result{}, nil
 	}
 
-	// Best-effort deprovision: try to read standing kubeconfig and clean up spoke
-	secretKey := client.ObjectKey{
-		Name:      credential.StandingKubeconfigName(sc.Name),
-		Namespace: r.operatorNamespace,
-	}
-	var standingSecret corev1.Secret
-	if err := r.client.Get(ctx, secretKey, &standingSecret); err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("Standing kubeconfig not found during deletion, skipping spoke cleanup", "spoke", sc.Name)
-		} else {
-			log.Error(err, "Failed to read standing kubeconfig during deletion", "spoke", sc.Name)
-		}
-	} else {
-		// Standing kubeconfig exists, try to deprovision spoke
-		kubeconfigBytes, ok := standingSecret.Data[credential.KubeconfigKey]
-		if ok {
-			cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfigBytes)
-			if err != nil {
-				log.Error(err, "Failed to parse standing kubeconfig during deletion", "spoke", sc.Name)
-			} else {
-				cfg.Timeout = spokeDialTimeout
-				spokeClient, err := r.NewSpokeClient(cfg)
-				if err != nil {
-					log.Error(err, "Failed to create spoke client during deletion", "spoke", sc.Name)
-				} else {
-					log.Info("Deprovisioning spoke", "spoke", sc.Name)
-					provisioner.Deprovision(ctx, spokeClient, log)
-				}
-			}
-		}
-	}
+	r.cleanupSpokeResources(ctx, sc)
 
-	// Remove finalizer (standing kubeconfig will be auto-GC'd via owner reference)
 	controllerutil.RemoveFinalizer(sc, spokeClusterFinalizer)
 	if err := r.client.Update(ctx, sc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
@@ -265,6 +259,63 @@ func (r *SpokeClusterReconciler) reconcileDelete(ctx context.Context, sc *hubv1a
 
 	log.Info("Removed finalizer, spoke cleanup complete", "spoke", sc.Name)
 	return ctrl.Result{}, nil
+}
+
+// cleanupSpokeResources removes resources created for this spoke: deprovisions
+// spoke-side resources and deletes the standing kubeconfig Secret. Best-effort —
+// errors are logged but do not block.
+func (r *SpokeClusterReconciler) cleanupSpokeResources(ctx context.Context, sc *hubv1alpha1.SpokeCluster) {
+	logger := log.FromContext(ctx).WithValues("spoke", sc.Name)
+	secretKey := client.ObjectKey{
+		Name:      credential.StandingKubeconfigName(sc.Name),
+		Namespace: r.operatorNamespace,
+	}
+
+	var standingSecret corev1.Secret
+	if err := r.client.Get(ctx, secretKey, &standingSecret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			logger.Error(err, "Failed to read standing kubeconfig during cleanup")
+		}
+		return
+	}
+
+	// Deprovision spoke-side resources using standing kubeconfig
+	kubeconfigBytes, ok := standingSecret.Data[credential.KubeconfigKey]
+	if ok {
+		cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfigBytes)
+		if err != nil {
+			logger.Error(err, "Failed to parse standing kubeconfig during cleanup")
+		} else {
+			cfg.Timeout = spokeDialTimeout
+			spokeClient, err := r.NewSpokeClient(cfg)
+			if err != nil {
+				logger.Error(err, "Failed to create spoke client during cleanup")
+			} else {
+				logger.Info("Deprovisioning spoke resources")
+				provisioner.Deprovision(ctx, spokeClient, logger)
+			}
+		}
+	}
+
+	// Delete standing kubeconfig Secret
+	if err := r.client.Delete(ctx, &standingSecret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			logger.Error(err, "Failed to delete standing kubeconfig during cleanup")
+		}
+	} else {
+		logger.Info("Deleted standing kubeconfig", "secret", standingSecret.Name)
+	}
+}
+
+func (r *SpokeClusterReconciler) credentialSourceMatchesMode(sc *hubv1alpha1.SpokeCluster, hc *hubv1alpha1.HubConfig) bool {
+	switch hc.Spec.ClusterRegistryMode {
+	case hubv1alpha1.ClusterRegistryModeSecret:
+		return sc.Spec.CredentialSource.Secret != nil
+	case hubv1alpha1.ClusterRegistryModeMCE:
+		return sc.Spec.CredentialSource.MCE != nil
+	default:
+		return false
+	}
 }
 
 func (r *SpokeClusterReconciler) setCondition(sc *hubv1alpha1.SpokeCluster, condType string, status metav1.ConditionStatus, reason, message string) {
@@ -277,9 +328,24 @@ func (r *SpokeClusterReconciler) setCondition(sc *hubv1alpha1.SpokeCluster, cond
 	})
 }
 
-// SetupWithManager sets up the controller with the Manager.
+// mapHubConfigToSpokeClusters maps any HubConfig event to reconcile requests
+// for all SpokeCluster CRs, so mode changes and HubConfig deletion trigger
+// re-evaluation of every spoke.
+func (r *SpokeClusterReconciler) mapHubConfigToSpokeClusters(ctx context.Context, _ client.Object) []reconcile.Request {
+	var spokeList hubv1alpha1.SpokeClusterList
+	if err := r.client.List(ctx, &spokeList); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, len(spokeList.Items))
+	for i, sc := range spokeList.Items {
+		requests[i] = reconcile.Request{NamespacedName: types.NamespacedName{Name: sc.Name}}
+	}
+	return requests
+}
+
 func (r *SpokeClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hubv1alpha1.SpokeCluster{}).
+		Watches(&hubv1alpha1.HubConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapHubConfigToSpokeClusters)).
 		Complete(r)
 }

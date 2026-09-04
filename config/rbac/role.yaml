@@ -26,6 +26,7 @@ rules:
   - hub.openshift.io
   resources:
   - hubconfigs
+  - spokeclusters
   verbs:
   - get
   - list
@@ -39,17 +40,6 @@ rules:
   - spokeclusters/finalizers
   verbs:
   - update
-- apiGroups:
-  - hub.openshift.io
-  resources:
-  - spokeclusters
-  verbs:
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
 - apiGroups:
   - hub.openshift.io
   resources:

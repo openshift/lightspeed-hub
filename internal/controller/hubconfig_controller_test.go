@@ -47,10 +47,6 @@ func newFakeHubConfigClient(objs ...client.Object) client.Client {
 		Build()
 }
 
-func newHubConfigReconciler(c client.Client) *HubConfigReconciler {
-	return NewHubConfigReconciler(c, c)
-}
-
 func newHubConfig() *hubv1alpha1.HubConfig {
 	return &hubv1alpha1.HubConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
@@ -71,25 +67,10 @@ func newHubConfigDeleting() *hubv1alpha1.HubConfig {
 	return hc
 }
 
-func newTestSpokeCluster(name string) *hubv1alpha1.SpokeCluster {
-	return &hubv1alpha1.SpokeCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: hubv1alpha1.SpokeClusterSpec{
-			APIServer: "https://api." + name + ".example.com:6443",
-			CredentialSource: hubv1alpha1.CredentialSource{
-				Secret: &hubv1alpha1.SecretCredentialSource{
-					Name:      name + "-creds",
-					Namespace: "openshift-lightspeed",
-				},
-			},
-		},
-	}
-}
-
 func TestHubConfigReconcile_AddsFinalizer(t *testing.T) {
 	hc := newHubConfig()
 	c := newFakeHubConfigClient(hc)
-	r := newHubConfigReconciler(c)
+	r := NewHubConfigReconciler(c)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
 	if err != nil {
@@ -117,7 +98,7 @@ func TestHubConfigReconcile_AddsFinalizer(t *testing.T) {
 func TestHubConfigReconcile_NotDeleting(t *testing.T) {
 	hc := newHubConfigWithFinalizer()
 	c := newFakeHubConfigClient(hc)
-	r := newHubConfigReconciler(c)
+	r := NewHubConfigReconciler(c)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
 	if err != nil {
@@ -128,45 +109,20 @@ func TestHubConfigReconcile_NotDeleting(t *testing.T) {
 	}
 }
 
-func TestHubConfigReconcile_DeleteCascadesSpokeClusters(t *testing.T) {
-	hc := newHubConfigDeleting()
-	spoke1 := newTestSpokeCluster("spoke-1")
-	spoke2 := newTestSpokeCluster("spoke-2")
-	c := newFakeHubConfigClient(hc, spoke1, spoke2)
-	r := newHubConfigReconciler(c)
-
-	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.RequeueAfter != spokeDrainRequeue {
-		t.Errorf("expected requeue after %v while draining, got %v", spokeDrainRequeue, result.RequeueAfter)
-	}
-
-	// Verify SpokeClusters were deleted (fake client deletes immediately without finalizers)
-	var spokeList hubv1alpha1.SpokeClusterList
-	if err := c.List(context.Background(), &spokeList); err != nil {
-		t.Fatalf("failed to list SpokeClusters: %v", err)
-	}
-	// Fake client deletes immediately, so list should be empty now
-	// But our reconciler counts remaining before delete completes, so it requeues
-}
-
-func TestHubConfigReconcile_DeleteNoSpokes(t *testing.T) {
+func TestHubConfigReconcile_DeleteRemovesFinalizer(t *testing.T) {
 	hc := newHubConfigDeleting()
 	c := newFakeHubConfigClient(hc)
-	r := newHubConfigReconciler(c)
+	r := NewHubConfigReconciler(c)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.Requeue || result.RequeueAfter != 0 {
-		t.Errorf("expected no requeue when no spokes, got %+v", result)
+		t.Errorf("expected no requeue, got %+v", result)
 	}
 
 	// Fake client auto-deletes the object once finalizers are empty and DeletionTimestamp is set.
-	// Verify the HubConfig is gone (finalizer was removed, GC completed).
 	var updated hubv1alpha1.HubConfig
 	err = c.Get(context.Background(), client.ObjectKey{Name: "cluster"}, &updated)
 	if err == nil {
@@ -180,7 +136,7 @@ func TestHubConfigReconcile_DeleteNoSpokes(t *testing.T) {
 
 func TestHubConfigReconcile_NotFound(t *testing.T) {
 	c := newFakeHubConfigClient()
-	r := newHubConfigReconciler(c)
+	r := NewHubConfigReconciler(c)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
 	if err != nil {

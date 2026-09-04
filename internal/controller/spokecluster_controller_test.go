@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -42,13 +43,16 @@ import (
 const (
 	spokeClusterFinalizer    = "hub.openshift.io/spoke-cleanup"
 	healthyRequeueAfter      = 5 * time.Minute
+	conditionTypeReady       = "Ready"
 	conditionTypeConnected   = "Connected"
 	conditionTypeProvisioned = "Provisioned"
 
-	reasonConnectionSucceeded   = "ConnectionSucceeded"
-	reasonConnectionFailed      = "ConnectionFailed"
-	reasonProvisioningSucceeded = "ProvisioningSucceeded"
-	reasonCredentialError       = "CredentialError"
+	reasonHubConfigMissing         = "HubConfigMissing"
+	reasonCredentialSourceMismatch = "CredentialSourceMismatch"
+	reasonConnectionSucceeded      = "ConnectionSucceeded"
+	reasonConnectionFailed         = "ConnectionFailed"
+	reasonProvisioningSucceeded    = "ProvisioningSucceeded"
+	reasonCredentialError          = "CredentialError"
 )
 
 // fakeCredentialSource is a mock CredentialSource for testing
@@ -70,6 +74,13 @@ func newTestScheme() *runtime.Scheme {
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = hubv1alpha1.AddToScheme(scheme)
 	return scheme
+}
+
+func defaultHubConfig() *hubv1alpha1.HubConfig {
+	return &hubv1alpha1.HubConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
+		Spec:       hubv1alpha1.HubConfigSpec{ClusterRegistryMode: hubv1alpha1.ClusterRegistryModeSecret},
+	}
 }
 
 func newSpokeCluster(name string) *hubv1alpha1.SpokeCluster {
@@ -122,7 +133,7 @@ var _ = Describe("SpokeClusterReconciler", func() {
 
 			hubClient := fake.NewClientBuilder().
 				WithScheme(newTestScheme()).
-				WithObjects(sc).
+				WithObjects(sc, defaultHubConfig()).
 				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
 				Build()
 
@@ -157,7 +168,7 @@ var _ = Describe("SpokeClusterReconciler", func() {
 
 			hubClient := fake.NewClientBuilder().
 				WithScheme(newTestScheme()).
-				WithObjects(sc).
+				WithObjects(sc, defaultHubConfig()).
 				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
 				Build()
 
@@ -219,7 +230,7 @@ var _ = Describe("SpokeClusterReconciler", func() {
 
 			hubClient := fake.NewClientBuilder().
 				WithScheme(newTestScheme()).
-				WithObjects(sc).
+				WithObjects(sc, defaultHubConfig()).
 				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
 				Build()
 
@@ -252,7 +263,7 @@ var _ = Describe("SpokeClusterReconciler", func() {
 
 			hubClient := fake.NewClientBuilder().
 				WithScheme(newTestScheme()).
-				WithObjects(sc).
+				WithObjects(sc, defaultHubConfig()).
 				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
 				Build()
 
@@ -328,7 +339,7 @@ current-context: spoke
 
 			hubClient := fake.NewClientBuilder().
 				WithScheme(newTestScheme()).
-				WithObjects(sc, standingSecret).
+				WithObjects(sc, standingSecret, defaultHubConfig()).
 				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
 				Build()
 
@@ -388,7 +399,7 @@ current-context: spoke
 
 			hubClient := fake.NewClientBuilder().
 				WithScheme(newTestScheme()).
-				WithObjects(sc, standingSecret).
+				WithObjects(sc, standingSecret, defaultHubConfig()).
 				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
 				Build()
 
@@ -420,7 +431,7 @@ current-context: spoke
 
 			hubClient := fake.NewClientBuilder().
 				WithScheme(newTestScheme()).
-				WithObjects(sc).
+				WithObjects(sc, defaultHubConfig()).
 				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
 				Build()
 
@@ -469,7 +480,7 @@ current-context: spoke
 
 			hubClient := fake.NewClientBuilder().
 				WithScheme(newTestScheme()).
-				WithObjects(sc).
+				WithObjects(sc, defaultHubConfig()).
 				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
 				Build()
 
@@ -536,7 +547,7 @@ current-context: spoke
 
 			hubClient := fake.NewClientBuilder().
 				WithScheme(newTestScheme()).
-				WithObjects(sc).
+				WithObjects(sc, defaultHubConfig()).
 				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
 				Build()
 
@@ -575,6 +586,121 @@ current-context: spoke
 			provCond := meta.FindStatusCondition(updated.Status.Conditions, conditionTypeProvisioned)
 			Expect(provCond).NotTo(BeNil())
 			Expect(provCond.Status).To(Equal(metav1.ConditionFalse))
+		})
+	})
+
+	Context("HubConfig lifecycle", func() {
+		It("should set Ready=False when HubConfig is missing", func() {
+			sc := newSpokeClusterWithFinalizer("test-spoke")
+
+			hubClient := fake.NewClientBuilder().
+				WithScheme(newTestScheme()).
+				WithObjects(sc).
+				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
+				Build()
+
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, &fakeCredentialSource{}, testNamespace)
+
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: sc.Name},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
+
+			var updated hubv1alpha1.SpokeCluster
+			Expect(hubClient.Get(ctx, types.NamespacedName{Name: sc.Name}, &updated)).To(Succeed())
+
+			readyCond := meta.FindStatusCondition(updated.Status.Conditions, conditionTypeReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCond.Reason).To(Equal(reasonHubConfigMissing))
+		})
+
+		It("should set Ready=False when credential source does not match HubConfig mode", func() {
+			sc := newSpokeClusterWithFinalizer("test-spoke")
+
+			mceHubConfig := &hubv1alpha1.HubConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
+				Spec:       hubv1alpha1.HubConfigSpec{ClusterRegistryMode: hubv1alpha1.ClusterRegistryModeMCE},
+			}
+
+			hubClient := fake.NewClientBuilder().
+				WithScheme(newTestScheme()).
+				WithObjects(sc, mceHubConfig).
+				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
+				Build()
+
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, &fakeCredentialSource{}, testNamespace)
+
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: sc.Name},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
+
+			var updated hubv1alpha1.SpokeCluster
+			Expect(hubClient.Get(ctx, types.NamespacedName{Name: sc.Name}, &updated)).To(Succeed())
+
+			readyCond := meta.FindStatusCondition(updated.Status.Conditions, conditionTypeReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCond.Reason).To(Equal(reasonCredentialSourceMismatch))
+		})
+
+		It("should clean up resources when HubConfig is removed", func() {
+			sc := newSpokeClusterWithFinalizer("test-spoke")
+			standingSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "spoke-kubeconfig-test-spoke",
+					Namespace: testNamespace,
+				},
+				Data: map[string][]byte{
+					"kubeconfig": []byte(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://api.spoke.example.com:6443
+  name: spoke
+users:
+- user:
+    token: test-token
+  name: spoke-user
+contexts:
+- context:
+    cluster: spoke
+    user: spoke-user
+  name: spoke
+current-context: spoke
+`),
+				},
+			}
+
+			hubClient := fake.NewClientBuilder().
+				WithScheme(newTestScheme()).
+				WithObjects(sc, standingSecret).
+				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
+				Build()
+
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, &fakeCredentialSource{}, testNamespace)
+			reconciler.NewSpokeClient = func(cfg *rest.Config) (client.Client, error) {
+				return fake.NewClientBuilder().WithScheme(newTestScheme()).Build(), nil
+			}
+
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: sc.Name},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
+
+			// Standing kubeconfig should be deleted
+			var secret corev1.Secret
+			err = hubClient.Get(ctx, types.NamespacedName{
+				Name: "spoke-kubeconfig-test-spoke", Namespace: testNamespace,
+			}, &secret)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
 	})
 })

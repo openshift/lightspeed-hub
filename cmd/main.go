@@ -95,7 +95,6 @@ func main() {
 
 	if err := controller.NewHubConfigReconciler(
 		mgr.GetClient(),
-		mgr.GetAPIReader(),
 	).SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to create controller", "controller", "HubConfig")
 		os.Exit(1)
