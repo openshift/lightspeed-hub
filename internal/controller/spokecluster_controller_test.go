@@ -48,6 +48,7 @@ const (
 	conditionTypeProvisioned = "Provisioned"
 
 	reasonHubConfigMissing         = "HubConfigMissing"
+	reasonUnsupportedMode          = "UnsupportedMode"
 	reasonCredentialSourceMismatch = "CredentialSourceMismatch"
 	reasonConnectionSucceeded      = "ConnectionSucceeded"
 	reasonConnectionFailed         = "ConnectionFailed"
@@ -617,7 +618,7 @@ current-context: spoke
 			Expect(readyCond.Reason).To(Equal(reasonHubConfigMissing))
 		})
 
-		It("should set Ready=False when credential source does not match HubConfig mode", func() {
+		It("should set Ready=False when HubConfig mode is unsupported", func() {
 			sc := newSpokeClusterWithFinalizer("test-spoke")
 
 			mceHubConfig := &hubv1alpha1.HubConfig{
@@ -646,7 +647,7 @@ current-context: spoke
 			readyCond := meta.FindStatusCondition(updated.Status.Conditions, conditionTypeReady)
 			Expect(readyCond).NotTo(BeNil())
 			Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
-			Expect(readyCond.Reason).To(Equal(reasonCredentialSourceMismatch))
+			Expect(readyCond.Reason).To(Equal(reasonUnsupportedMode))
 		})
 
 		It("should clean up resources when HubConfig is removed", func() {

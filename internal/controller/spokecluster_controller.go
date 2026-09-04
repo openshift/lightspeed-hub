@@ -52,6 +52,7 @@ const (
 
 	reasonManaged                  = "Managed"
 	reasonHubConfigMissing         = "HubConfigMissing"
+	reasonUnsupportedMode          = "UnsupportedMode"
 	reasonCredentialSourceMismatch = "CredentialSourceMismatch"
 	reasonConnectionSucceeded      = "ConnectionSucceeded"
 	reasonConnectionFailed         = "ConnectionFailed"
@@ -142,6 +143,19 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("getting HubConfig: %w", err)
+	}
+
+	// Reject unsupported modes
+	if hubConfig.Spec.ClusterRegistryMode != hubv1alpha1.ClusterRegistryModeSecret {
+		log.Info("Unsupported clusterRegistryMode, unmanaging spoke", "spoke", sc.Name,
+			"mode", hubConfig.Spec.ClusterRegistryMode)
+		r.cleanupSpokeResources(ctx, &sc)
+		r.setCondition(&sc, conditionTypeReady, metav1.ConditionFalse, reasonUnsupportedMode,
+			fmt.Sprintf("clusterRegistryMode %q is not yet supported", hubConfig.Spec.ClusterRegistryMode))
+		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
+			log.Error(updateErr, "Failed to update status")
+		}
+		return ctrl.Result{}, nil
 	}
 
 	// Check credential source matches HubConfig mode
