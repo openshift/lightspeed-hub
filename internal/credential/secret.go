@@ -58,7 +58,7 @@ func (s *SecretCredentialSource) GetRESTConfig(ctx context.Context, sc *hubv1alp
 		return nil, fmt.Errorf("parsing kubeconfig from secret %s/%s: %w", ref.Namespace, ref.Name, err)
 	}
 
-	if cfg.BearerToken == "" && len(cfg.TLSClientConfig.CertData) == 0 {
+	if cfg.BearerToken == "" && len(cfg.CertData) == 0 {
 		return nil, fmt.Errorf("admin kubeconfig secret %s/%s must contain a token or client certificate; exec-based auth (e.g. oc login) is not supported", ref.Namespace, ref.Name)
 	}
 

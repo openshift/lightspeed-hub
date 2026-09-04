@@ -76,7 +76,7 @@ func TestHubConfigReconcile_AddsFinalizer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.Requeue {
+	if !result.Requeue { //nolint:staticcheck // testing legacy Requeue field
 		t.Error("expected requeue after adding finalizer")
 	}
 
@@ -104,7 +104,7 @@ func TestHubConfigReconcile_NotDeleting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Requeue || result.RequeueAfter != 0 {
+	if result.Requeue || result.RequeueAfter != 0 { //nolint:staticcheck // testing legacy Requeue field
 		t.Error("expected no requeue when not deleting")
 	}
 }
@@ -118,7 +118,7 @@ func TestHubConfigReconcile_DeleteRemovesFinalizer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Requeue || result.RequeueAfter != 0 {
+	if result.Requeue || result.RequeueAfter != 0 { //nolint:staticcheck // testing legacy Requeue field
 		t.Errorf("expected no requeue, got %+v", result)
 	}
 
@@ -142,7 +142,7 @@ func TestHubConfigReconcile_NotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error for NotFound: %v", err)
 	}
-	if result.Requeue || result.RequeueAfter != 0 {
+	if result.Requeue || result.RequeueAfter != 0 { //nolint:staticcheck // testing legacy Requeue field
 		t.Errorf("expected no requeue for NotFound, got %+v", result)
 	}
 }
