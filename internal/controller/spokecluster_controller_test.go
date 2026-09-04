@@ -42,7 +42,6 @@ import (
 const (
 	spokeClusterFinalizer    = "hub.openshift.io/spoke-cleanup"
 	healthyRequeueAfter      = 5 * time.Minute
-	unhealthyRequeueAfter    = 30 * time.Second
 	conditionTypeConnected   = "Connected"
 	conditionTypeProvisioned = "Provisioned"
 
@@ -234,8 +233,8 @@ var _ = Describe("SpokeClusterReconciler", func() {
 				NamespacedName: types.NamespacedName{Name: sc.Name},
 			})
 
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(unhealthyRequeueAfter))
+			Expect(err).To(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
 
 			// Check status
 			var updated hubv1alpha1.SpokeCluster
@@ -276,8 +275,8 @@ var _ = Describe("SpokeClusterReconciler", func() {
 				NamespacedName: types.NamespacedName{Name: sc.Name},
 			})
 
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(unhealthyRequeueAfter))
+			Expect(err).To(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
 
 			// Check status
 			var updated hubv1alpha1.SpokeCluster
@@ -563,8 +562,8 @@ current-context: spoke
 				NamespacedName: types.NamespacedName{Name: sc.Name},
 			})
 
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(unhealthyRequeueAfter))
+			Expect(err).To(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
 
 			var updated hubv1alpha1.SpokeCluster
 			Expect(hubClient.Get(ctx, types.NamespacedName{Name: sc.Name}, &updated)).To(Succeed())

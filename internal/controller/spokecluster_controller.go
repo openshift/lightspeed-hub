@@ -41,7 +41,6 @@ import (
 const (
 	spokeClusterFinalizer = "hub.openshift.io/spoke-cleanup"
 	healthyRequeueAfter   = 5 * time.Minute
-	unhealthyRequeueAfter = 30 * time.Second
 	spokeDialTimeout      = 10 * time.Second
 
 	conditionTypeConnected   = "Connected"
@@ -134,7 +133,7 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
 			log.Error(updateErr, "Failed to update status after credential error")
 		}
-		return ctrl.Result{RequeueAfter: unhealthyRequeueAfter}, nil
+		return ctrl.Result{}, err
 	}
 
 	// Set dial timeout on REST config
@@ -174,7 +173,7 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
 			log.Error(updateErr, "Failed to update status after connectivity check")
 		}
-		return ctrl.Result{RequeueAfter: unhealthyRequeueAfter}, nil
+		return ctrl.Result{}, err
 	}
 
 	// Connectivity succeeded — set Connected=True
@@ -187,7 +186,7 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
 			log.Error(updateErr, "Failed to update status")
 		}
-		return ctrl.Result{RequeueAfter: unhealthyRequeueAfter}, nil
+		return ctrl.Result{}, fmt.Errorf("creating spoke client: %w", err)
 	}
 
 	// Provision spoke-side resources (idempotent)
@@ -197,7 +196,7 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
 			log.Error(updateErr, "Failed to update status after provisioning error")
 		}
-		return ctrl.Result{RequeueAfter: unhealthyRequeueAfter}, nil
+		return ctrl.Result{}, fmt.Errorf("provisioning spoke: %w", err)
 	}
 
 	// Provisioning succeeded
