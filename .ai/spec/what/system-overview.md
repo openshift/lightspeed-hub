@@ -81,14 +81,22 @@ spec:
 20. CRD validation MUST require `metadata.name` equals `cluster` (singleton pattern, same as ApprovalPolicy and AgenticOLSConfig).
 21. `clusterRegistryMode` MUST be one of `secret` or `mce`.
 
+### HubConfig Lifecycle
+
+22. When no HubConfig exists, the hub operator MUST ignore all SpokeCluster CRs. No provisioning, no connectivity checks, no standing kubeconfigs. SpokeCluster CRs MAY exist but are not managed.
+23. When HubConfig is present, a SpokeCluster is managed only if its `credentialSource` type matches `clusterRegistryMode`. Mismatched SpokeCluster CRs MUST be ignored with a status condition indicating the mismatch (e.g. `Ready=False`, reason `CredentialSourceMismatch`).
+24. When HubConfig is deleted, the hub operator MUST stop managing all spokes and clean up resources it created for them (standing kubeconfig Secrets, spoke-side namespace/SA/ClusterRoleBindings). The operator MUST NOT delete SpokeCluster CRs — removing CRs is the user's (or GitOps's) responsibility.
+25. When HubConfig is created or `clusterRegistryMode` changes, the hub operator MUST re-evaluate all SpokeCluster CRs. Spokes matching the new mode are adopted; non-matching spokes are unmanaged with their associated resources cleaned up and a status condition set.
+26. A HubConfig create, update, or delete MUST trigger reconciliation of all SpokeCluster CRs.
+
 ### MCE Auto-Discovery
 
-23. When `clusterRegistryMode: mce`, the hub operator MUST watch MCE `ManagedCluster` CRs and automatically create/delete `SpokeCluster` CRs for matching clusters.
-24. The `mce.selector.matchLabels` field filters which ManagedClusters are included. When omitted, all ManagedClusters are included.
-25. Auto-created SpokeCluster CRs MUST have `spec.apiServer` and `spec.credentialSource.mce.managedClusterName` populated from the ManagedCluster CR.
-26. When a ManagedCluster is deleted or its labels no longer match the selector, the corresponding SpokeCluster CR MUST be deleted (triggering standard decommission cleanup).
-27. When `clusterRegistryMode: mce`, manually created SpokeCluster CRs MUST be rejected by a validating webhook — MCE is the single source of truth.
-28. Auto-created SpokeCluster CRs MUST have an owner label (`hub.openshift.io/managed-by: mce-auto-discovery`) to distinguish them from manually created ones.
+27. When `clusterRegistryMode: mce`, the hub operator MUST watch MCE `ManagedCluster` CRs and automatically create/delete `SpokeCluster` CRs for matching clusters.
+28. The `mce.selector.matchLabels` field filters which ManagedClusters are included. When omitted, all ManagedClusters are included.
+29. Auto-created SpokeCluster CRs MUST have `spec.apiServer` and `spec.credentialSource.mce.managedClusterName` populated from the ManagedCluster CR.
+30. When a ManagedCluster is deleted or its labels no longer match the selector, the corresponding SpokeCluster CR MUST be deleted (triggering standard decommission cleanup).
+31. When `clusterRegistryMode: mce`, manually created SpokeCluster CRs MUST be rejected by a validating webhook — MCE is the single source of truth.
+32. Auto-created SpokeCluster CRs MUST have an owner label (`hub.openshift.io/managed-by: mce-auto-discovery`) to distinguish them from manually created ones.
 
 ## CRD: SpokeCluster
 
@@ -150,6 +158,7 @@ status:
 | Condition | Meaning |
 |---|---|
 | `Connected` | Hub can reach spoke kube-api via the credential source |
+| `Provisioned` | Spoke-side resources (namespace, SA, ClusterRoleBindings) are created |
 | `AdaptersReady` | All standalone adapter pods are running for this spoke |
 
 ### Planned Status Conditions
