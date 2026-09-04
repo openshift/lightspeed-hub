@@ -150,6 +150,7 @@ status:
 | Condition | Meaning |
 |---|---|
 | `Connected` | Hub can reach spoke kube-api via the credential source |
+| `Provisioned` | Spoke-side resources (namespace, SA, ClusterRoleBindings) are created |
 | `AdaptersReady` | All standalone adapter pods are running for this spoke |
 
 ### Planned Status Conditions

@@ -23,7 +23,7 @@ Full lifecycle of a spoke cluster from registration through decommission.
 6. These spoke-side resources establish the reader RBAC pattern that the agentic-operator's `addReaderSubject` uses — per-step SAs are added to these same ClusterRoleBindings to inherit cluster-wide read access. This is identical to how `lightspeed-agent` is used in single-cluster mode, but in the `openshift-lightspeed-managed` namespace to avoid conflicts with a spoke-local OLS installation.
 7. The hub operator MUST deploy standalone adapter pods on the hub for the spoke (e.g., alerts-adapter configured to poll spoke's AlertManager via remote kube-api).
 8. Adapter pods run on the hub, not on the spoke. They use the standing kubeconfig for remote API access.
-9. Provisioning status MUST be tracked in SpokeCluster status conditions: `Connected`, `AdaptersReady`.
+9. Provisioning status MUST be tracked in SpokeCluster status conditions: `Connected` (API server reachable), `Provisioned` (spoke-side resources created), `AdaptersReady` (adapter pods running). `Connected` and `Provisioned` are independent — a spoke can be connected but not yet provisioned.
 10. Provisioning MUST be idempotent — re-reconciling a SpokeCluster must converge without side effects.
 
 ### Standing Kubeconfig Secret
