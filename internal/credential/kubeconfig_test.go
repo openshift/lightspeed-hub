@@ -110,6 +110,12 @@ func TestBuildStandingKubeconfig_TokenAuth(t *testing.T) {
 	if ownerRef.UID != sc.UID {
 		t.Errorf("owner UID = %q, want %q", ownerRef.UID, sc.UID)
 	}
+	if ownerRef.Controller == nil || !*ownerRef.Controller {
+		t.Error("owner Controller should be true")
+	}
+	if ownerRef.BlockOwnerDeletion == nil || !*ownerRef.BlockOwnerDeletion {
+		t.Error("owner BlockOwnerDeletion should be true")
+	}
 
 	// Verify kubeconfig data exists
 	kubeconfigBytes, ok := secret.Data[KubeconfigKey]

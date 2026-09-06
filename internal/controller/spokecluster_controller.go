@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -171,7 +172,7 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	cfg.Timeout = spokeDialTimeout
 
-	// Create or update standing kubeconfig Secret
+	// Create or update standing kubeconfig Secret (skip update if unchanged)
 	standingSecret, err := credential.BuildStandingKubeconfig(cfg, &sc, r.operatorNamespace)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("building standing kubeconfig: %w", err)
@@ -186,24 +187,21 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if err := r.client.Get(ctx, secretKey, &existingSecret); err != nil {
 			return ctrl.Result{}, fmt.Errorf("getting existing standing kubeconfig: %w", err)
 		}
-		existingSecret.Data = standingSecret.Data
-		existingSecret.OwnerReferences = standingSecret.OwnerReferences
-		if err := r.client.Update(ctx, &existingSecret); err != nil {
-			return ctrl.Result{}, fmt.Errorf("updating standing kubeconfig: %w", err)
+		if !bytes.Equal(existingSecret.Data[credential.KubeconfigKey], standingSecret.Data[credential.KubeconfigKey]) {
+			existingSecret.Data = standingSecret.Data
+			existingSecret.OwnerReferences = standingSecret.OwnerReferences
+			if err := r.client.Update(ctx, &existingSecret); err != nil {
+				return ctrl.Result{}, fmt.Errorf("updating standing kubeconfig: %w", err)
+			}
+			log.Info("Updated standing kubeconfig", "spoke", sc.Name, "secret", standingSecret.Name)
 		}
-		log.Info("Updated standing kubeconfig", "spoke", sc.Name, "secret", standingSecret.Name)
 	} else {
 		return ctrl.Result{}, fmt.Errorf("creating standing kubeconfig: %w", err)
 	}
 
-	// Validate connectivity with the saved standing kubeconfig
-	standingCfg, err := clientcmd.RESTConfigFromKubeConfig(standingSecret.Data[credential.KubeconfigKey])
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("parsing standing kubeconfig: %w", err)
-	}
-	standingCfg.Timeout = spokeDialTimeout
-
-	if err := r.CheckConnectivity(standingCfg); err != nil {
+	// Check connectivity using the original rest.Config (already validated to
+	// contain static credentials — no serialize-then-reparse needed)
+	if err := r.CheckConnectivity(cfg); err != nil {
 		log.Error(err, "Connectivity check failed", "spoke", sc.Name)
 		r.setCondition(&sc, conditionTypeConnected, metav1.ConditionFalse, reasonConnectionFailed, err.Error())
 		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
@@ -214,26 +212,30 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	r.setCondition(&sc, conditionTypeConnected, metav1.ConditionTrue, reasonConnectionSucceeded, "spoke API server is reachable")
 
-	// Provision spoke-side resources
-	spokeClient, err := r.NewSpokeClient(standingCfg)
-	if err != nil {
-		r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionFalse, reasonProvisioningFailed, fmt.Sprintf("failed to create spoke client: %v", err))
-		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
-			log.Error(updateErr, "Failed to update status")
+	// Provision spoke-side resources (skip if already provisioned)
+	provCond := meta.FindStatusCondition(sc.Status.Conditions, conditionTypeProvisioned)
+	if provCond == nil || provCond.Status != metav1.ConditionTrue {
+		spokeClient, err := r.NewSpokeClient(cfg)
+		if err != nil {
+			r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionFalse, reasonProvisioningFailed, fmt.Sprintf("failed to create spoke client: %v", err))
+			if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
+				log.Error(updateErr, "Failed to update status")
+			}
+			return ctrl.Result{}, fmt.Errorf("creating spoke client: %w", err)
 		}
-		return ctrl.Result{}, fmt.Errorf("creating spoke client: %w", err)
+
+		if err := provisioner.Provision(ctx, spokeClient); err != nil {
+			log.Error(err, "Failed to provision spoke", "spoke", sc.Name)
+			r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionFalse, reasonProvisioningFailed, err.Error())
+			if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
+				log.Error(updateErr, "Failed to update status after provisioning error")
+			}
+			return ctrl.Result{}, fmt.Errorf("provisioning spoke: %w", err)
+		}
+
+		r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionTrue, reasonProvisioningSucceeded, "spoke-side resources provisioned")
 	}
 
-	if err := provisioner.Provision(ctx, spokeClient); err != nil {
-		log.Error(err, "Failed to provision spoke", "spoke", sc.Name)
-		r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionFalse, reasonProvisioningFailed, err.Error())
-		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
-			log.Error(updateErr, "Failed to update status after provisioning error")
-		}
-		return ctrl.Result{}, fmt.Errorf("provisioning spoke: %w", err)
-	}
-
-	r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionTrue, reasonProvisioningSucceeded, "spoke-side resources provisioned")
 	if err := r.client.Status().Update(ctx, &sc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
 	}

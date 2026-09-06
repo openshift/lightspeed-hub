@@ -51,10 +51,12 @@ func BuildStandingKubeconfig(cfg *rest.Config, sc *hubv1alpha1.SpokeCluster, ope
 			Namespace: operatorNamespace,
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion: hubv1alpha1.GroupVersion.String(),
-					Kind:       "SpokeCluster",
-					Name:       sc.Name,
-					UID:        sc.UID,
+					APIVersion:         hubv1alpha1.GroupVersion.String(),
+					Kind:               "SpokeCluster",
+					Name:               sc.Name,
+					UID:                sc.UID,
+					Controller:         boolPtr(true),
+					BlockOwnerDeletion: boolPtr(true),
 				},
 			},
 		},
@@ -90,3 +92,5 @@ func buildKubeconfigAPI(cfg *rest.Config, apiServer string) clientcmdapi.Config 
 		CurrentContext: "spoke",
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }
