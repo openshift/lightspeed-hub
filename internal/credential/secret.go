@@ -53,6 +53,23 @@ func (s *SecretCredentialSource) GetRESTConfig(ctx context.Context, sc *hubv1alp
 		return nil, fmt.Errorf("admin kubeconfig secret %s/%s missing 'kubeconfig' key", ref.Namespace, ref.Name)
 	}
 
+	// Parse the kubeconfig API config first to check for file paths before
+	// RESTConfigFromKubeConfig tries to read them and fails with a confusing error.
+	apiCfg, err := clientcmd.Load(kubeconfig)
+	if err != nil {
+		return nil, fmt.Errorf("parsing kubeconfig from secret %s/%s: %w", ref.Namespace, ref.Name, err)
+	}
+	for name, cluster := range apiCfg.Clusters {
+		if cluster.CertificateAuthority != "" {
+			return nil, fmt.Errorf("admin kubeconfig secret %s/%s cluster %q uses certificate-authority file path; use 'kubectl config view --flatten' to convert to inline data", ref.Namespace, ref.Name, name)
+		}
+	}
+	for name, authInfo := range apiCfg.AuthInfos {
+		if authInfo.ClientCertificate != "" || authInfo.ClientKey != "" {
+			return nil, fmt.Errorf("admin kubeconfig secret %s/%s user %q uses client-certificate/key file paths; use 'kubectl config view --flatten' to convert to inline data", ref.Namespace, ref.Name, name)
+		}
+	}
+
 	cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("parsing kubeconfig from secret %s/%s: %w", ref.Namespace, ref.Name, err)

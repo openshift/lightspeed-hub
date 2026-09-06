@@ -145,6 +145,34 @@ func TestSecretCredentialSource_GetRESTConfig(t *testing.T) {
 			errMsg:  "has no secret credential source",
 		},
 		{
+			name:  "kubeconfig with file paths rejected",
+			spoke: spokeWithSecret("admin-kubeconfig", "openshift-lightspeed"),
+			secrets: []client.Object{
+				adminSecret("admin-kubeconfig", "openshift-lightspeed", map[string][]byte{
+					"kubeconfig": []byte(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://127.0.0.1:6443
+    certificate-authority: /path/to/ca.crt
+  name: spoke
+users:
+- user:
+    token: some-token
+  name: spoke-user
+contexts:
+- context:
+    cluster: spoke
+    user: spoke-user
+  name: spoke
+current-context: spoke
+`),
+				}),
+			},
+			wantErr: true,
+			errMsg:  "certificate-authority file path",
+		},
+		{
 			name:  "kubeconfig without static credentials rejected",
 			spoke: spokeWithSecret("admin-kubeconfig", "openshift-lightspeed"),
 			secrets: []client.Object{

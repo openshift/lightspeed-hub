@@ -130,45 +130,30 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Check HubConfig exists
+	// Check HubConfig exists and is not being deleted
 	var hubConfig hubv1alpha1.HubConfig
 	if err := r.client.Get(ctx, client.ObjectKey{Name: "cluster"}, &hubConfig); err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Info("No HubConfig found, unmanaging spoke", "spoke", sc.Name)
-			r.cleanupSpokeResources(ctx, &sc)
-			r.setCondition(&sc, conditionTypeReady, metav1.ConditionFalse, reasonHubConfigMissing, "HubConfig 'cluster' not found")
-			if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
-				log.Error(updateErr, "Failed to update status")
-			}
-			return ctrl.Result{}, nil
+			return r.unmanageSpoke(ctx, &sc, reasonHubConfigMissing, "HubConfig 'cluster' not found")
 		}
 		return ctrl.Result{}, fmt.Errorf("getting HubConfig: %w", err)
 	}
 
+	// Treat a deleting HubConfig as absent to avoid delayed cleanup
+	if !hubConfig.DeletionTimestamp.IsZero() {
+		return r.unmanageSpoke(ctx, &sc, reasonHubConfigMissing, "HubConfig is being deleted")
+	}
+
 	// Reject unsupported modes
 	if hubConfig.Spec.ClusterRegistryMode != hubv1alpha1.ClusterRegistryModeSecret {
-		log.Info("Unsupported clusterRegistryMode, unmanaging spoke", "spoke", sc.Name,
-			"mode", hubConfig.Spec.ClusterRegistryMode)
-		r.cleanupSpokeResources(ctx, &sc)
-		r.setCondition(&sc, conditionTypeReady, metav1.ConditionFalse, reasonUnsupportedMode,
+		return r.unmanageSpoke(ctx, &sc, reasonUnsupportedMode,
 			fmt.Sprintf("clusterRegistryMode %q is not yet supported", hubConfig.Spec.ClusterRegistryMode))
-		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
-			log.Error(updateErr, "Failed to update status")
-		}
-		return ctrl.Result{}, nil
 	}
 
 	// Check credential source matches HubConfig mode
 	if !r.credentialSourceMatchesMode(&sc, &hubConfig) {
-		log.Info("Credential source does not match HubConfig mode, unmanaging spoke", "spoke", sc.Name,
-			"mode", hubConfig.Spec.ClusterRegistryMode)
-		r.cleanupSpokeResources(ctx, &sc)
-		r.setCondition(&sc, conditionTypeReady, metav1.ConditionFalse, reasonCredentialSourceMismatch,
+		return r.unmanageSpoke(ctx, &sc, reasonCredentialSourceMismatch,
 			fmt.Sprintf("credential source does not match clusterRegistryMode %q", hubConfig.Spec.ClusterRegistryMode))
-		if updateErr := r.client.Status().Update(ctx, &sc); updateErr != nil {
-			log.Error(updateErr, "Failed to update status")
-		}
-		return ctrl.Result{}, nil
 	}
 
 	r.setCondition(&sc, conditionTypeReady, metav1.ConditionTrue, reasonManaged, "spoke is managed by hub")
@@ -321,6 +306,24 @@ func (r *SpokeClusterReconciler) cleanupSpokeResources(ctx context.Context, sc *
 	}
 }
 
+// unmanageSpoke cleans up spoke resources, clears stale conditions, and updates
+// status. Returns an error if the status update fails so the workqueue retries.
+func (r *SpokeClusterReconciler) unmanageSpoke(ctx context.Context, sc *hubv1alpha1.SpokeCluster, reason, message string) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+	log.Info("Unmanaging spoke", "spoke", sc.Name, "reason", reason)
+
+	r.cleanupSpokeResources(ctx, sc)
+
+	r.setCondition(sc, conditionTypeReady, metav1.ConditionFalse, reason, message)
+	meta.RemoveStatusCondition(&sc.Status.Conditions, conditionTypeConnected)
+	meta.RemoveStatusCondition(&sc.Status.Conditions, conditionTypeProvisioned)
+
+	if err := r.client.Status().Update(ctx, sc); err != nil {
+		return ctrl.Result{}, fmt.Errorf("updating status after unmanaging spoke: %w", err)
+	}
+	return ctrl.Result{}, nil
+}
+
 func (r *SpokeClusterReconciler) credentialSourceMatchesMode(sc *hubv1alpha1.SpokeCluster, hc *hubv1alpha1.HubConfig) bool {
 	switch hc.Spec.ClusterRegistryMode {
 	case hubv1alpha1.ClusterRegistryModeSecret:
@@ -346,8 +349,10 @@ func (r *SpokeClusterReconciler) setCondition(sc *hubv1alpha1.SpokeCluster, cond
 // for all SpokeCluster CRs, so mode changes and HubConfig deletion trigger
 // re-evaluation of every spoke.
 func (r *SpokeClusterReconciler) mapHubConfigToSpokeClusters(ctx context.Context, _ client.Object) []reconcile.Request {
+	logger := log.FromContext(ctx)
 	var spokeList hubv1alpha1.SpokeClusterList
 	if err := r.client.List(ctx, &spokeList); err != nil {
+		logger.Error(err, "Failed to list SpokeCluster CRs for HubConfig event mapping")
 		return nil
 	}
 	requests := make([]reconcile.Request, len(spokeList.Items))
