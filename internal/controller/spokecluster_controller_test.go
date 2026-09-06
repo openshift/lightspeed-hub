@@ -142,7 +142,7 @@ var _ = Describe("SpokeClusterReconciler", func() {
 				cfg: &rest.Config{Host: "https://api.spoke.example.com:6443"},
 			}
 
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, credSource, testNamespace)
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, testNamespace)
 
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{Name: sc.Name},
@@ -183,7 +183,7 @@ var _ = Describe("SpokeClusterReconciler", func() {
 				},
 			}
 
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, credSource, testNamespace)
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, testNamespace)
 			reconciler.NewSpokeClient = func(cfg *rest.Config) (client.Client, error) {
 				return spokeClient, nil
 			}
@@ -239,7 +239,7 @@ var _ = Describe("SpokeClusterReconciler", func() {
 				err: fmt.Errorf("secret not found"),
 			}
 
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, credSource, testNamespace)
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, testNamespace)
 
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{Name: sc.Name},
@@ -278,7 +278,7 @@ var _ = Describe("SpokeClusterReconciler", func() {
 				},
 			}
 
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, credSource, testNamespace)
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, testNamespace)
 			reconciler.CheckConnectivity = func(cfg *rest.Config) error {
 				return fmt.Errorf("connection refused")
 			}
@@ -345,7 +345,7 @@ current-context: spoke
 				Build()
 
 			credSource := &fakeCredentialSource{}
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, credSource, testNamespace)
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, testNamespace)
 			reconciler.NewSpokeClient = func(cfg *rest.Config) (client.Client, error) {
 				return spokeClient, nil
 			}
@@ -405,7 +405,7 @@ current-context: spoke
 				Build()
 
 			credSource := &fakeCredentialSource{}
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, credSource, testNamespace)
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, testNamespace)
 			reconciler.NewSpokeClient = func(cfg *rest.Config) (client.Client, error) {
 				return nil, fmt.Errorf("spoke unreachable")
 			}
@@ -437,7 +437,7 @@ current-context: spoke
 				Build()
 
 			credSource := &fakeCredentialSource{}
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, credSource, testNamespace)
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, testNamespace)
 
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{Name: sc.Name},
@@ -461,7 +461,7 @@ current-context: spoke
 				Build()
 
 			credSource := &fakeCredentialSource{}
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, credSource, testNamespace)
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, testNamespace)
 
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{Name: "nonexistent"},
@@ -495,7 +495,7 @@ current-context: spoke
 				},
 			}
 
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, credSource, testNamespace)
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, testNamespace)
 			reconciler.NewSpokeClient = func(cfg *rest.Config) (client.Client, error) {
 				return spokeClient, nil
 			}
@@ -562,7 +562,7 @@ current-context: spoke
 				},
 			}
 
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, credSource, testNamespace)
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, testNamespace)
 			reconciler.CheckConnectivity = func(cfg *rest.Config) error {
 				return nil
 			}
@@ -600,7 +600,7 @@ current-context: spoke
 				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
 				Build()
 
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, &fakeCredentialSource{}, testNamespace)
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), &fakeCredentialSource{}, testNamespace)
 
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{Name: sc.Name},
@@ -632,7 +632,7 @@ current-context: spoke
 				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
 				Build()
 
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, &fakeCredentialSource{}, testNamespace)
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), &fakeCredentialSource{}, testNamespace)
 
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{Name: sc.Name},
@@ -684,7 +684,7 @@ current-context: spoke
 				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
 				Build()
 
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, &fakeCredentialSource{}, testNamespace)
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), &fakeCredentialSource{}, testNamespace)
 			reconciler.NewSpokeClient = func(cfg *rest.Config) (client.Client, error) {
 				return fake.NewClientBuilder().WithScheme(newTestScheme()).Build(), nil
 			}

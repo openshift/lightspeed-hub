@@ -4,5 +4,5 @@ resources:
 - manager.yaml
 images:
 - name: controller
-  newName: quay.io/openshift-lightspeed/lightspeed-hub
+  newName: quay.io/hasun/lightspeed-hub-operator
   newTag: latest

@@ -20,12 +20,19 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
 	hubv1alpha1 "github.com/openshift/lightspeed-hub/api/v1alpha1"
 )
+
+func kubeconfigTestScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = hubv1alpha1.AddToScheme(s)
+	return s
+}
 
 func TestStandingKubeconfigName(t *testing.T) {
 	tests := []struct {
@@ -79,7 +86,7 @@ func TestBuildStandingKubeconfig_TokenAuth(t *testing.T) {
 	sc := spokeCluster()
 	operatorNS := "openshift-lightspeed"
 
-	secret, err := BuildStandingKubeconfig(cfg, sc, operatorNS)
+	secret, err := BuildStandingKubeconfig(cfg, sc, operatorNS, kubeconfigTestScheme())
 	if err != nil {
 		t.Fatalf("BuildStandingKubeconfig() error = %v", err)
 	}
@@ -154,7 +161,7 @@ func TestBuildStandingKubeconfig_ClientCertAuth(t *testing.T) {
 	sc := spokeCluster()
 	operatorNS := "openshift-lightspeed"
 
-	secret, err := BuildStandingKubeconfig(cfg, sc, operatorNS)
+	secret, err := BuildStandingKubeconfig(cfg, sc, operatorNS, kubeconfigTestScheme())
 	if err != nil {
 		t.Fatalf("BuildStandingKubeconfig() error = %v", err)
 	}
@@ -197,7 +204,7 @@ func TestBuildStandingKubeconfig_FallbackToHost(t *testing.T) {
 	sc.Spec.APIServer = "" // Empty APIServer to test fallback
 	operatorNS := "openshift-lightspeed"
 
-	secret, err := BuildStandingKubeconfig(cfg, sc, operatorNS)
+	secret, err := BuildStandingKubeconfig(cfg, sc, operatorNS, kubeconfigTestScheme())
 	if err != nil {
 		t.Fatalf("BuildStandingKubeconfig() error = %v", err)
 	}

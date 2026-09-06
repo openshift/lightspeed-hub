@@ -86,6 +86,7 @@ func main() {
 	credSource := credential.NewSecretCredentialSource(mgr.GetClient())
 	if err := controller.NewSpokeClusterReconciler(
 		mgr.GetClient(),
+		mgr.GetScheme(),
 		credSource,
 		namespace,
 	).SetupWithManager(mgr); err != nil {

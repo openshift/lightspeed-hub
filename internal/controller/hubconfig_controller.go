@@ -18,23 +18,20 @@ package controller
 
 import (
 	"context"
-	"fmt"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	hubv1alpha1 "github.com/openshift/lightspeed-hub/api/v1alpha1"
 )
 
-const (
-	hubConfigFinalizerName = "hub.openshift.io/hubconfig-cleanup"
-)
+// +kubebuilder:rbac:groups=hub.openshift.io,resources=hubconfigs,verbs=get;list;watch
 
-// +kubebuilder:rbac:groups=hub.openshift.io,resources=hubconfigs,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=hub.openshift.io,resources=hubconfigs/finalizers,verbs=update
-
+// HubConfigReconciler exists only to register a watch on HubConfig. All spoke
+// lifecycle logic lives in the SpokeCluster controller, which watches HubConfig
+// events via mapHubConfigToSpokeClusters. No finalizer is needed — the
+// SpokeCluster controller handles both "deleting HubConfig" and "missing
+// HubConfig" identically via unmanageSpoke.
 type HubConfigReconciler struct {
 	client client.Client
 }
@@ -50,35 +47,6 @@ func (r *HubConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *HubConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
-	var hc hubv1alpha1.HubConfig
-	if err := r.client.Get(ctx, req.NamespacedName, &hc); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
-
-	if !controllerutil.ContainsFinalizer(&hc, hubConfigFinalizerName) {
-		controllerutil.AddFinalizer(&hc, hubConfigFinalizerName)
-		if err := r.client.Update(ctx, &hc); err != nil {
-			return ctrl.Result{}, fmt.Errorf("adding finalizer to HubConfig: %w", err)
-		}
-		return ctrl.Result{Requeue: true}, nil
-	}
-
-	if hc.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
-	}
-
-	// HubConfig is being deleted. The SpokeCluster controller watches HubConfig
-	// events and will reconcile all spokes, cleaning up their resources. We just
-	// need to remove the finalizer. SpokeCluster CRs are NOT deleted — that is
-	// the user's or GitOps's responsibility.
-	controllerutil.RemoveFinalizer(&hc, hubConfigFinalizerName)
-	if err := r.client.Update(ctx, &hc); err != nil {
-		return ctrl.Result{}, fmt.Errorf("removing finalizer from HubConfig: %w", err)
-	}
-
-	logger.Info("HubConfig deleted, SpokeCluster controller will unmanage all spokes")
+func (r *HubConfigReconciler) Reconcile(_ context.Context, _ ctrl.Request) (ctrl.Result, error) {
 	return ctrl.Result{}, nil
 }

@@ -21,9 +21,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	hubv1alpha1 "github.com/openshift/lightspeed-hub/api/v1alpha1"
 )
@@ -37,7 +39,7 @@ func StandingKubeconfigName(spokeName string) string {
 	return StandingKubeconfigPrefix + spokeName
 }
 
-func BuildStandingKubeconfig(cfg *rest.Config, sc *hubv1alpha1.SpokeCluster, operatorNamespace string) (*corev1.Secret, error) {
+func BuildStandingKubeconfig(cfg *rest.Config, sc *hubv1alpha1.SpokeCluster, operatorNamespace string, scheme *runtime.Scheme) (*corev1.Secret, error) {
 	kubeconfig := buildKubeconfigAPI(cfg, sc.Spec.APIServer)
 
 	kubeconfigBytes, err := clientcmd.Write(kubeconfig)
@@ -49,20 +51,14 @@ func BuildStandingKubeconfig(cfg *rest.Config, sc *hubv1alpha1.SpokeCluster, ope
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      StandingKubeconfigName(sc.Name),
 			Namespace: operatorNamespace,
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion:         hubv1alpha1.GroupVersion.String(),
-					Kind:               "SpokeCluster",
-					Name:               sc.Name,
-					UID:                sc.UID,
-					Controller:         boolPtr(true),
-					BlockOwnerDeletion: boolPtr(true),
-				},
-			},
 		},
 		Data: map[string][]byte{
 			KubeconfigKey: kubeconfigBytes,
 		},
+	}
+
+	if err := controllerutil.SetControllerReference(sc, secret, scheme); err != nil {
+		return nil, fmt.Errorf("setting controller reference on standing kubeconfig for spoke %q: %w", sc.Name, err)
 	}
 
 	return secret, nil
@@ -92,5 +88,3 @@ func buildKubeconfigAPI(cfg *rest.Config, apiServer string) clientcmdapi.Config 
 		CurrentContext: "spoke",
 	}
 }
-
-func boolPtr(b bool) *bool { return &b }
