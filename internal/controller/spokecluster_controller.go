@@ -161,20 +161,28 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	cfg.Timeout = spokeDialTimeout
 
-	// Create or update standing kubeconfig (skip update if unchanged)
+	// Create or update standing kubeconfig (skip update if data and owner unchanged)
 	if err := r.ensureStandingKubeconfig(ctx, cfg, &sc); err != nil {
-		return ctrl.Result{}, err
+		return r.failWithCondition(ctx, &sc, conditionTypeConnected, reasonCredentialError, err)
 	}
 
-	// Check connectivity
-	if err := r.CheckConnectivity(cfg); err != nil {
+	// Parse the standing kubeconfig to use for connectivity and provisioning.
+	// This validates with the stored credentials and apiServer URL, not the
+	// admin kubeconfig's host which may differ.
+	standingCfg, err := r.loadStandingKubeconfig(ctx, &sc)
+	if err != nil {
+		return r.failWithCondition(ctx, &sc, conditionTypeConnected, reasonCredentialError, err)
+	}
+
+	// Check connectivity using the standing kubeconfig
+	if err := r.CheckConnectivity(standingCfg); err != nil {
 		log.Error(err, "Connectivity check failed", "spoke", sc.Name)
 		return r.failWithCondition(ctx, &sc, conditionTypeConnected, reasonConnectionFailed, err)
 	}
 	r.setCondition(&sc, conditionTypeConnected, metav1.ConditionTrue, reasonConnectionSucceeded, "spoke API server is reachable")
 
-	// Provision spoke-side resources (always run — idempotent Creates are cheap)
-	spokeClient, err := r.NewSpokeClient(cfg)
+	// Provision spoke-side resources using standing kubeconfig
+	spokeClient, err := r.NewSpokeClient(standingCfg)
 	if err != nil {
 		return r.failWithCondition(ctx, &sc, conditionTypeProvisioned, reasonProvisioningFailed, fmt.Errorf("creating spoke client: %w", err))
 	}
@@ -236,7 +244,9 @@ func (r *SpokeClusterReconciler) ensureStandingKubeconfig(ctx context.Context, c
 	if err := r.client.Get(ctx, secretKey, &existingSecret); err != nil {
 		return fmt.Errorf("getting existing standing kubeconfig: %w", err)
 	}
-	if !bytes.Equal(existingSecret.Data[credential.KubeconfigKey], standingSecret.Data[credential.KubeconfigKey]) {
+	dataChanged := !bytes.Equal(existingSecret.Data[credential.KubeconfigKey], standingSecret.Data[credential.KubeconfigKey])
+	ownerChanged := !ownerRefsEqual(existingSecret.OwnerReferences, standingSecret.OwnerReferences)
+	if dataChanged || ownerChanged {
 		existingSecret.Data = standingSecret.Data
 		existingSecret.OwnerReferences = standingSecret.OwnerReferences
 		if err := r.client.Update(ctx, &existingSecret); err != nil {
@@ -309,14 +319,50 @@ func (r *SpokeClusterReconciler) unmanageSpoke(ctx context.Context, sc *hubv1alp
 	return ctrl.Result{}, nil
 }
 
-// failWithCondition sets a condition, updates status, and returns the error for
-// workqueue backoff. Consolidates the repeated set-condition + update + return pattern.
+// failWithCondition sets a failure condition, clears Ready (since the spoke is
+// no longer fully managed), updates status, and returns the error for workqueue backoff.
 func (r *SpokeClusterReconciler) failWithCondition(ctx context.Context, sc *hubv1alpha1.SpokeCluster, condType, reason string, err error) (ctrl.Result, error) {
 	r.setCondition(sc, condType, metav1.ConditionFalse, reason, err.Error())
+	r.setCondition(sc, conditionTypeReady, metav1.ConditionFalse, reason, err.Error())
 	if updateErr := r.client.Status().Update(ctx, sc); updateErr != nil {
 		log.FromContext(ctx).Error(updateErr, "Failed to update status")
 	}
 	return ctrl.Result{}, err
+}
+
+// loadStandingKubeconfig reads the standing kubeconfig Secret and parses it
+// into a rest.Config for connectivity checks and provisioning.
+func (r *SpokeClusterReconciler) loadStandingKubeconfig(ctx context.Context, sc *hubv1alpha1.SpokeCluster) (*rest.Config, error) {
+	secretKey := client.ObjectKey{
+		Name:      credential.StandingKubeconfigName(sc.Name),
+		Namespace: r.operatorNamespace,
+	}
+	var secret corev1.Secret
+	if err := r.client.Get(ctx, secretKey, &secret); err != nil {
+		return nil, fmt.Errorf("reading standing kubeconfig: %w", err)
+	}
+	kubeconfigBytes, ok := secret.Data[credential.KubeconfigKey]
+	if !ok {
+		return nil, fmt.Errorf("standing kubeconfig secret %s missing %q key", secretKey.Name, credential.KubeconfigKey)
+	}
+	cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfigBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parsing standing kubeconfig: %w", err)
+	}
+	cfg.Timeout = spokeDialTimeout
+	return cfg, nil
+}
+
+func ownerRefsEqual(a, b []metav1.OwnerReference) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].UID != b[i].UID || a[i].Name != b[i].Name {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *SpokeClusterReconciler) credentialSourceMatchesMode(sc *hubv1alpha1.SpokeCluster, hc *hubv1alpha1.HubConfig) bool {

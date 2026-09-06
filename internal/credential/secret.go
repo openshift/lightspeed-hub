@@ -68,6 +68,9 @@ func (s *SecretCredentialSource) GetRESTConfig(ctx context.Context, sc *hubv1alp
 		if authInfo.ClientCertificate != "" || authInfo.ClientKey != "" {
 			return nil, fmt.Errorf("admin kubeconfig secret %s/%s user %q uses client-certificate/key file paths; use 'kubectl config view --flatten' to convert to inline data", ref.Namespace, ref.Name, name)
 		}
+		if authInfo.TokenFile != "" {
+			return nil, fmt.Errorf("admin kubeconfig secret %s/%s user %q uses tokenFile which would read the hub pod's SA token; use a static token instead", ref.Namespace, ref.Name, name)
+		}
 	}
 
 	cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
