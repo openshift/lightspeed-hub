@@ -30,3 +30,6 @@ Dockerfile.cross
 .env
 .env.*
 !.env.example
+
+# local test
+test-tmp/

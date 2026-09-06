@@ -1,11 +1,56 @@
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  labels:
-    app.kubernetes.io/name: lightspeed-hub
-    app.kubernetes.io/managed-by: kustomize
-  name: manager-role
+  name: hub-operator-manager-role
 rules:
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "watch"]
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - hub.openshift.io
+  resources:
+  - hubconfigs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - hub.openshift.io
+  resources:
+  - spokeclusters
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - hub.openshift.io
+  resources:
+  - spokeclusters/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - hub.openshift.io
+  resources:
+  - spokeclusters/status
+  verbs:
+  - get
+  - patch
+  - update
