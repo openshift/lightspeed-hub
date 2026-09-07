@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -68,6 +69,7 @@ type SpokeClusterReconciler struct {
 	scheme            *runtime.Scheme
 	credentialSource  credential.CredentialSource
 	operatorNamespace string
+	recorder          record.EventRecorder
 
 	NewSpokeClient    func(cfg *rest.Config) (client.Client, error)
 	CheckConnectivity func(cfg *rest.Config) error
@@ -82,6 +84,10 @@ func NewSpokeClusterReconciler(hubClient client.Client, scheme *runtime.Scheme, 
 		NewSpokeClient:    defaultNewSpokeClient,
 		CheckConnectivity: defaultCheckConnectivity,
 	}
+}
+
+func (r *SpokeClusterReconciler) SetEventRecorder(recorder record.EventRecorder) {
+	r.recorder = recorder
 }
 
 func defaultNewSpokeClient(cfg *rest.Config) (client.Client, error) {
@@ -267,6 +273,8 @@ func (r *SpokeClusterReconciler) cleanupSpokeResources(ctx context.Context, sc *
 		Namespace: r.operatorNamespace,
 	}
 
+	var spokeCleanupFailed bool
+
 	// Try to deprovision spoke-side resources using standing kubeconfig
 	var standingSecret corev1.Secret
 	if err := r.client.Get(ctx, secretKey, &standingSecret); err == nil {
@@ -275,11 +283,13 @@ func (r *SpokeClusterReconciler) cleanupSpokeResources(ctx context.Context, sc *
 			cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfigBytes)
 			if err != nil {
 				logger.Error(err, "Failed to parse standing kubeconfig during cleanup")
+				spokeCleanupFailed = true
 			} else {
 				cfg.Timeout = spokeDialTimeout
 				spokeClient, err := r.NewSpokeClient(cfg)
 				if err != nil {
 					logger.Error(err, "Failed to create spoke client during cleanup")
+					spokeCleanupFailed = true
 				} else {
 					logger.Info("Deprovisioning spoke resources")
 					provisioner.Deprovision(ctx, spokeClient, logger)
@@ -288,6 +298,12 @@ func (r *SpokeClusterReconciler) cleanupSpokeResources(ctx context.Context, sc *
 		}
 	} else if !apierrors.IsNotFound(err) {
 		logger.Error(err, "Failed to read standing kubeconfig during cleanup")
+		spokeCleanupFailed = true
+	}
+
+	if spokeCleanupFailed && r.recorder != nil {
+		r.recorder.Eventf(sc, corev1.EventTypeWarning, "SpokeCleanupFailed",
+			"Spoke-side resources were not cleaned up (spoke unreachable); hub-side cleanup proceeded")
 	}
 
 	// Always attempt to delete the standing kubeconfig Secret
@@ -401,6 +417,7 @@ func (r *SpokeClusterReconciler) mapHubConfigToSpokeClusters(ctx context.Context
 }
 
 func (r *SpokeClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.recorder = mgr.GetEventRecorderFor("spokecluster-controller") //nolint:staticcheck // Using old events API for consistency
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hubv1alpha1.SpokeCluster{}).
 		Watches(&hubv1alpha1.HubConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapHubConfigToSpokeClusters)).
