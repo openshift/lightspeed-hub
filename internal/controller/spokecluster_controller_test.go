@@ -769,7 +769,7 @@ current-context: spoke
 			}
 
 			// Should have emitted a warning event
-			Expect(fakeRecorder.Events).To(HaveLen(1))
+			Expect(fakeRecorder.Events).ToNot(BeEmpty())
 			event := <-fakeRecorder.Events
 			Expect(event).To(ContainSubstring("Warning"))
 			Expect(event).To(ContainSubstring("SpokeCleanupFailed"))

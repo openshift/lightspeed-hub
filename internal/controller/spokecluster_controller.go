@@ -86,6 +86,8 @@ func NewSpokeClusterReconciler(hubClient client.Client, scheme *runtime.Scheme, 
 	}
 }
 
+// SetEventRecorder is for testing — SetupWithManager overwrites the recorder
+// from the manager, so this only takes effect when SetupWithManager is not called.
 func (r *SpokeClusterReconciler) SetEventRecorder(recorder record.EventRecorder) {
 	r.recorder = recorder
 }
@@ -301,9 +303,10 @@ func (r *SpokeClusterReconciler) cleanupSpokeResources(ctx context.Context, sc *
 		spokeCleanupFailed = true
 	}
 
+	// TODO: OLS-4158 have Deprovision return errors for Event emission
 	if spokeCleanupFailed && r.recorder != nil {
 		r.recorder.Eventf(sc, corev1.EventTypeWarning, "SpokeCleanupFailed",
-			"Spoke-side resources were not cleaned up (spoke unreachable); hub-side cleanup proceeded")
+			"Spoke-side cleanup failed (check operator logs for details); hub-side cleanup proceeded")
 	}
 
 	// Always attempt to delete the standing kubeconfig Secret
