@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -702,6 +703,76 @@ current-context: spoke
 				Name: "spoke-kubeconfig-test-spoke", Namespace: testNamespace,
 			}, &secret)
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
+	})
+
+	Context("Event recording", func() {
+		It("should emit warning event when spoke is unreachable during deletion", func() {
+			sc := newSpokeClusterDeleting("test-spoke")
+
+			standingSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      credential.StandingKubeconfigName(sc.Name),
+					Namespace: testNamespace,
+				},
+				Data: map[string][]byte{
+					credential.KubeconfigKey: []byte(`
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://api.spoke.example.com:6443
+    certificate-authority-data: ZmFrZS1jYQ==
+  name: spoke
+users:
+- user:
+    token: fake-token
+  name: spoke-user
+contexts:
+- context:
+    cluster: spoke
+    user: spoke-user
+  name: spoke
+current-context: spoke
+`),
+				},
+			}
+
+			hubClient := fake.NewClientBuilder().
+				WithScheme(newTestScheme()).
+				WithObjects(sc, standingSecret, defaultHubConfig()).
+				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
+				Build()
+
+			credSource := &fakeCredentialSource{}
+			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, testNamespace)
+
+			fakeRecorder := record.NewFakeRecorder(10)
+			reconciler.SetEventRecorder(fakeRecorder)
+
+			reconciler.NewSpokeClient = func(cfg *rest.Config) (client.Client, error) {
+				return nil, fmt.Errorf("spoke unreachable")
+			}
+
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: sc.Name},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
+
+			// Finalizer should still be removed
+			var updated hubv1alpha1.SpokeCluster
+			err = hubClient.Get(ctx, types.NamespacedName{Name: sc.Name}, &updated)
+			if err == nil {
+				Expect(updated.Finalizers).NotTo(ContainElement(spokeClusterFinalizer))
+			}
+
+			// Should have emitted a warning event
+			Expect(fakeRecorder.Events).ToNot(BeEmpty())
+			event := <-fakeRecorder.Events
+			Expect(event).To(ContainSubstring("Warning"))
+			Expect(event).To(ContainSubstring("SpokeCleanupFailed"))
 		})
 	})
 })

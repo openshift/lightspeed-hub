@@ -104,11 +104,11 @@ The `proxy-url` field is handled transparently by Go's HTTP transport. Consumers
 ### Decommission
 
 21. Deleting a SpokeCluster CR MUST trigger cleanup:
-    - Delete standalone adapter pods on the hub for this spoke.
+    - [PLANNED] Delete standalone adapter pods on the hub for this spoke (depends on adapter orchestrator).
     - Delete the standing kubeconfig Secret on the hub (auto-GC via owner reference).
     - Delete spoke-side resources (`lightspeed-agent` SA, ClusterRoleBindings, `openshift-lightspeed-managed` namespace) via remote kube-api using the standing kubeconfig.
     - [PLANNED] Delete AgenticRun CRD and related resources on the spoke (for embedded adapter support).
-22. Cleanup MUST be best-effort — if the spoke is unreachable, hub-side cleanup MUST still proceed and the CR deletion MUST succeed (with a warning condition) rather than blocking indefinitely. Spoke-side resources will remain but are harmless (read-only SA, no secrets).
+22. Cleanup MUST be best-effort — if the spoke is unreachable, hub-side cleanup MUST still proceed and the CR deletion MUST succeed (with a warning Event on the SpokeCluster CR) rather than blocking indefinitely. Spoke-side resources will remain but are harmless (read-only SA, no secrets).
 23. Finalizers MUST be used to ensure cleanup runs before CR removal.
 
 ### Unmanaging
@@ -122,6 +122,7 @@ The `proxy-url` field is handled transparently by Go's HTTP transport. Consumers
 | Ticket | Summary |
 |---|---|
 | OLS-2984 | Initial implementation — spoke lifecycle MVP |
+| OLS-3948 | Decommission warning Events and spec alignment |
 | — | Embedded adapter support: install AgenticRun CRD on spoke, start dedicated watcher |
 | — | Spoke-local mode: deploy full agentic stack to spoke during registration |
 | — | Standing kubeconfig token rotation for MCE mode |
