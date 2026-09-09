@@ -23,7 +23,7 @@ How the hub coordinates agentic operations across multiple spoke clusters.
 
 ### Alert Aggregation
 
-9. Each spoke has its own alerts-adapter pod running on the hub, polling the spoke's AlertManager.
+9. A single alerts-adapter instance on the hub watches `SpokeCluster` CRs and polls all spokes' AlertManagers. See `alerts-adapter-multicluster.md` in the parent spec for details.
 10. Alerts from different spokes create separate AgenticRun CRs on the hub — no cross-spoke deduplication in MVP.
 11. [PLANNED] Fleet-wide alert deduplication for identical alerts firing across multiple spokes.
 

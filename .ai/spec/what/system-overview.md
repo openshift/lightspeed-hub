@@ -16,13 +16,13 @@ The Lightspeed Hub is a Kubernetes operator that runs on a central hub cluster a
 
 6. **SpokeCluster Controller** — reconciles SpokeCluster CRs. Validates spoke connectivity, deploys standalone adapter pods on hub, manages credential lifecycle, updates status conditions.
 7. **Credential Broker** — pluggable interface returning a `rest.Config` for a given spoke. Implementations: `SecretCredentialSource` (stored kubeconfig), `MCECredentialSource` (MCE cluster-proxy). [PLANNED] `BackplaneCredentialSource`.
-8. **Adapter Orchestrator** — manages standalone adapter Deployments on the hub. One adapter pod per spoke per adapter type, configured with spoke kubeconfig for remote event source access.
+8. **Adapter Orchestrator** — manages standalone adapter Deployments on the hub. Configures a single alerts-adapter instance with `multicluster: true` and provisions per-spoke AlertManager kubeconfig Secrets (`spoke-alert-kubeconfig-{spoke-name}`). The adapter watches SpokeCluster CRs to discover spokes. See `alerts-adapter-multicluster.md` in the parent spec for details.
 
 ### Spoke Onboarding
 
 9. When a SpokeCluster CR is created, the hub MUST validate spoke connectivity via the credential broker before marking the spoke as ready.
 10. Spoke onboarding MUST be idempotent — re-applying a SpokeCluster CR must converge without side effects.
-11. The hub MUST deploy standalone adapter pods for the spoke on the hub.
+11. The hub MUST provision the per-spoke AlertManager kubeconfig Secret and label the SpokeCluster CR for adapter discovery.
 
 ### Spoke Health Monitoring
 
@@ -159,7 +159,7 @@ status:
 |---|---|
 | `Connected` | Hub can reach spoke kube-api via the credential source |
 | `Provisioned` | Spoke-side resources (namespace, SA, ClusterRoleBindings) are created |
-| `AdaptersReady` | All standalone adapter pods are running for this spoke |
+| `AdaptersReady` | Per-spoke adapter credential Secrets are provisioned and the adapter can reach the spoke's AlertManager |
 
 ### Planned Status Conditions
 

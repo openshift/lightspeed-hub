@@ -23,9 +23,9 @@ Full lifecycle of a spoke cluster from registration through decommission.
    - Create `cluster-reader` ClusterRoleBinding binding `openshift-lightspeed-managed/lightspeed-agent` to the `cluster-reader` ClusterRole.
    - Create `cluster-monitoring-view` ClusterRoleBinding binding `openshift-lightspeed-managed/lightspeed-agent` to the `cluster-monitoring-view` ClusterRole.
 6. These spoke-side resources establish the reader RBAC pattern that the agentic-operator's `addReaderSubject` uses — per-step SAs are added to these same ClusterRoleBindings to inherit cluster-wide read access. This is identical to how `lightspeed-agent` is used in single-cluster mode, but in the `openshift-lightspeed-managed` namespace to avoid conflicts with a spoke-local OLS installation.
-7. The hub operator MUST deploy standalone adapter pods on the hub for the spoke (e.g., alerts-adapter configured to poll spoke's AlertManager via remote kube-api).
-8. Adapter pods run on the hub, not on the spoke. They use the standing kubeconfig for remote API access.
-9. Provisioning status MUST be tracked in SpokeCluster status conditions: `Connected` (API server reachable), `Provisioned` (spoke-side resources created), `AdaptersReady` (adapter pods running). `Connected` and `Provisioned` are independent — a spoke can be connected but not yet provisioned.
+7. The hub operator MUST provision a per-spoke AlertManager kubeconfig Secret (`spoke-alert-kubeconfig-{spoke-name}`) on the hub and set the `hub.openshift.io/alert-kubeconfig-secret` label on the SpokeCluster CR with the Secret name. This Secret is scoped to AlertManager read-only access on the spoke, separate from the standing kubeconfig used by the agentic-operator.
+8. A single alerts-adapter instance on the hub watches SpokeCluster CRs and discovers spokes dynamically — no per-spoke adapter Deployments. See `alerts-adapter-multicluster.md` in the parent spec for details.
+9. Provisioning status MUST be tracked in SpokeCluster status conditions: `Connected` (API server reachable), `Provisioned` (spoke-side resources created), `AdaptersReady` (adapter credential Secrets provisioned). `Connected` and `Provisioned` are independent — a spoke can be connected but not yet provisioned.
 10. Provisioning MUST be idempotent — re-reconciling a SpokeCluster must converge without side effects.
 
 ### Standing Kubeconfig Secret
@@ -35,7 +35,7 @@ Full lifecycle of a spoke cluster from registration through decommission.
 13. **Secret mode**: the hub operator reads the admin-provided kubeconfig from the referenced Secret and normalizes it into the standing kubeconfig Secret.
 14. **MCE mode**: the hub operator reads the spoke API server from the ManagedCluster CR, discovers the MCE cluster-proxy service endpoint and CA, obtains a hub-side SA token authorized to use the proxy, and creates the standing kubeconfig with `proxy-url` set to the MCE cluster-proxy endpoint.
 15. The standing kubeconfig Secret MUST have an owner reference to the SpokeCluster CR (auto-GC on deletion).
-16. The standing kubeconfig Secret is used by: the agentic-operator (to create per-step SAs and get ephemeral tokens on the spoke) and standalone adapter pods (to poll spoke event sources).
+16. The standing kubeconfig Secret is used by the agentic-operator (to create per-step SAs and get ephemeral tokens on the spoke). Standalone adapters use their own per-spoke credential Secrets (e.g., `spoke-alert-kubeconfig-{spoke-name}` for the alerts-adapter).
 17. For MCE mode, the hub operator MUST periodically refresh the standing kubeconfig Secret if the hub SA token has a bounded lifetime.
 
 ### Standing Kubeconfig Format
@@ -104,9 +104,10 @@ The `proxy-url` field is handled transparently by Go's HTTP transport. Consumers
 ### Decommission
 
 21. Deleting a SpokeCluster CR MUST trigger cleanup:
-    - [PLANNED] Delete standalone adapter pods on the hub for this spoke (depends on adapter orchestrator).
+    - Delete the AlertManager kubeconfig Secret (`spoke-alert-kubeconfig-{spoke-name}`) on the hub (auto-GC via owner reference).
     - Delete the standing kubeconfig Secret on the hub (auto-GC via owner reference).
     - Delete spoke-side resources (`lightspeed-agent` SA, ClusterRoleBindings, `openshift-lightspeed-managed` namespace) via remote kube-api using the standing kubeconfig.
+    - The alerts-adapter detects the SpokeCluster deletion via its watch and stops polling that spoke automatically — no explicit adapter cleanup needed.
     - [PLANNED] Delete AgenticRun CRD and related resources on the spoke (for embedded adapter support).
 22. Cleanup MUST be best-effort — if the spoke is unreachable, hub-side cleanup MUST still proceed and the CR deletion MUST succeed (with a warning Event on the SpokeCluster CR) rather than blocking indefinitely. Spoke-side resources will remain but are harmless (read-only SA, no secrets).
 23. Finalizers MUST be used to ensure cleanup runs before CR removal.
