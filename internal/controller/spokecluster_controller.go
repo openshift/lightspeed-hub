@@ -26,7 +26,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
@@ -49,9 +51,10 @@ const (
 	healthyRequeueAfter   = 5 * time.Minute
 	spokeDialTimeout      = 10 * time.Second
 
-	conditionTypeReady       = "Ready"
-	conditionTypeConnected   = "Connected"
-	conditionTypeProvisioned = "Provisioned"
+	conditionTypeReady         = "Ready"
+	conditionTypeConnected     = "Connected"
+	conditionTypeProvisioned   = "Provisioned"
+	conditionTypeAdaptersReady = "AdaptersReady"
 
 	reasonManaged                  = "Managed"
 	reasonHubConfigMissing         = "HubConfigMissing"
@@ -62,6 +65,8 @@ const (
 	reasonCredentialError          = "CredentialError"
 	reasonProvisioningSucceeded    = "ProvisioningSucceeded"
 	reasonProvisioningFailed       = "ProvisioningFailed"
+	reasonAdaptersReady            = "AdaptersReady"
+	reasonAdaptersFailed           = "AdaptersFailed"
 )
 
 type SpokeClusterReconciler struct {
@@ -71,18 +76,20 @@ type SpokeClusterReconciler struct {
 	operatorNamespace string
 	recorder          record.EventRecorder
 
-	NewSpokeClient    func(cfg *rest.Config) (client.Client, error)
-	CheckConnectivity func(cfg *rest.Config) error
+	NewSpokeClient          func(cfg *rest.Config) (client.Client, error)
+	CheckConnectivity       func(cfg *rest.Config) error
+	DiscoverAlertmanagerURL func(ctx context.Context, spokeClient client.Client) (string, error)
 }
 
 func NewSpokeClusterReconciler(hubClient client.Client, scheme *runtime.Scheme, credSource credential.CredentialSource, operatorNamespace string) *SpokeClusterReconciler {
 	return &SpokeClusterReconciler{
-		client:            hubClient,
-		scheme:            scheme,
-		credentialSource:  credSource,
-		operatorNamespace: operatorNamespace,
-		NewSpokeClient:    defaultNewSpokeClient,
-		CheckConnectivity: defaultCheckConnectivity,
+		client:                  hubClient,
+		scheme:                  scheme,
+		credentialSource:        credSource,
+		operatorNamespace:       operatorNamespace,
+		NewSpokeClient:          defaultNewSpokeClient,
+		CheckConnectivity:       defaultCheckConnectivity,
+		DiscoverAlertmanagerURL: defaultDiscoverAlertmanagerURL,
 	}
 }
 
@@ -200,6 +207,13 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionTrue, reasonProvisioningSucceeded, "spoke-side resources provisioned")
 
+	// Adapter orchestration: provision spoke-side adapter resources, create hub-side credential Secret
+	if err := r.reconcileAdapters(ctx, &sc, spokeClient); err != nil {
+		log.Error(err, "Failed to provision adapters", "spoke", sc.Name)
+		return r.failWithCondition(ctx, &sc, conditionTypeAdaptersReady, reasonAdaptersFailed, err)
+	}
+	r.setCondition(&sc, conditionTypeAdaptersReady, metav1.ConditionTrue, reasonAdaptersReady, "adapter credential Secrets provisioned")
+
 	// Set Ready=True only after all checks pass
 	r.setCondition(&sc, conditionTypeReady, metav1.ConditionTrue, reasonManaged, "spoke is managed by hub")
 	if err := r.client.Status().Update(ctx, &sc); err != nil {
@@ -294,6 +308,7 @@ func (r *SpokeClusterReconciler) cleanupSpokeResources(ctx context.Context, sc *
 					spokeCleanupFailed = true
 				} else {
 					logger.Info("Deprovisioning spoke resources")
+					provisioner.DeprovisionAdapter(ctx, spokeClient, logger)
 					provisioner.Deprovision(ctx, spokeClient, logger)
 				}
 			}
@@ -320,6 +335,18 @@ func (r *SpokeClusterReconciler) cleanupSpokeResources(ctx context.Context, sc *
 	} else {
 		logger.Info("Deleted standing kubeconfig", "secret", secretKey.Name)
 	}
+
+	// Delete adapter credential Secret (also has owner reference for auto-GC)
+	adapterSecret := &corev1.Secret{}
+	adapterSecret.Name = credential.AdapterCredentialName(sc.Name)
+	adapterSecret.Namespace = r.operatorNamespace
+	if err := r.client.Delete(ctx, adapterSecret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			logger.Error(err, "Failed to delete adapter credential Secret during cleanup")
+		}
+	} else {
+		logger.Info("Deleted adapter credential Secret", "secret", adapterSecret.Name)
+	}
 }
 
 func (r *SpokeClusterReconciler) unmanageSpoke(ctx context.Context, sc *hubv1alpha1.SpokeCluster, reason, message string) (ctrl.Result, error) {
@@ -331,6 +358,7 @@ func (r *SpokeClusterReconciler) unmanageSpoke(ctx context.Context, sc *hubv1alp
 	r.setCondition(sc, conditionTypeReady, metav1.ConditionFalse, reason, message)
 	meta.RemoveStatusCondition(&sc.Status.Conditions, conditionTypeConnected)
 	meta.RemoveStatusCondition(&sc.Status.Conditions, conditionTypeProvisioned)
+	meta.RemoveStatusCondition(&sc.Status.Conditions, conditionTypeAdaptersReady)
 
 	if err := r.client.Status().Update(ctx, sc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status after unmanaging spoke: %w", err)
@@ -403,6 +431,135 @@ func (r *SpokeClusterReconciler) setCondition(sc *hubv1alpha1.SpokeCluster, cond
 		Message:            message,
 		ObservedGeneration: sc.Generation,
 	})
+}
+
+func (r *SpokeClusterReconciler) reconcileAdapters(ctx context.Context, sc *hubv1alpha1.SpokeCluster, spokeClient client.Client) error {
+	log := log.FromContext(ctx)
+
+	// Provision spoke-side adapter resources (SA, RoleBinding, token Secret)
+	if err := provisioner.ProvisionAdapter(ctx, spokeClient); err != nil {
+		return fmt.Errorf("provisioning adapter resources: %w", err)
+	}
+
+	// Read the token from the spoke-side token Secret
+	token, err := r.readAdapterToken(ctx, spokeClient)
+	if err != nil {
+		return fmt.Errorf("reading adapter token: %w", err)
+	}
+
+	// Discover the AlertManager Route URL from the spoke
+	alertmanagerURL, err := r.DiscoverAlertmanagerURL(ctx, spokeClient)
+	if err != nil {
+		return fmt.Errorf("discovering AlertManager URL: %w", err)
+	}
+
+	// Create or update the hub-side adapter credential Secret
+	if err := r.ensureAdapterCredentialSecret(ctx, sc, alertmanagerURL, token); err != nil {
+		return fmt.Errorf("ensuring adapter credential Secret: %w", err)
+	}
+
+	// Label the SpokeCluster CR for adapter discovery
+	if err := r.ensureAdapterLabel(ctx, sc); err != nil {
+		return fmt.Errorf("labeling SpokeCluster: %w", err)
+	}
+
+	log.Info("Adapter orchestration complete", "spoke", sc.Name)
+	return nil
+}
+
+func (r *SpokeClusterReconciler) readAdapterToken(ctx context.Context, spokeClient client.Client) (string, error) {
+	var tokenSecret corev1.Secret
+	secretKey := client.ObjectKey{
+		Name:      provisioner.AlertAdapterTokenSecret,
+		Namespace: provisioner.ManagedNamespace,
+	}
+	if err := spokeClient.Get(ctx, secretKey, &tokenSecret); err != nil {
+		return "", fmt.Errorf("getting token Secret: %w", err)
+	}
+	token, ok := tokenSecret.Data["token"]
+	if !ok || len(token) == 0 {
+		return "", fmt.Errorf("token Secret %s missing 'token' key (token controller may not have populated it yet)", secretKey.Name)
+	}
+	return string(token), nil
+}
+
+func (r *SpokeClusterReconciler) ensureAdapterCredentialSecret(ctx context.Context, sc *hubv1alpha1.SpokeCluster, alertmanagerURL, token string) error {
+	log := log.FromContext(ctx)
+
+	adapterSecret, err := credential.BuildAdapterCredentialSecret(sc, alertmanagerURL, token, "", r.operatorNamespace, r.scheme)
+	if err != nil {
+		return err
+	}
+
+	err = r.client.Create(ctx, adapterSecret)
+	if err == nil {
+		log.Info("Created adapter credential Secret", "spoke", sc.Name, "secret", adapterSecret.Name)
+		return nil
+	}
+	if !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating adapter credential Secret: %w", err)
+	}
+
+	var existing corev1.Secret
+	secretKey := client.ObjectKey{Name: adapterSecret.Name, Namespace: adapterSecret.Namespace}
+	if err := r.client.Get(ctx, secretKey, &existing); err != nil {
+		return fmt.Errorf("getting existing adapter credential Secret: %w", err)
+	}
+	dataChanged := !bytes.Equal(existing.Data[credential.AlertmanagerURLKey], adapterSecret.Data[credential.AlertmanagerURLKey]) ||
+		!bytes.Equal(existing.Data[credential.TokenKey], adapterSecret.Data[credential.TokenKey])
+	ownerChanged := !ownerRefsEqual(existing.OwnerReferences, adapterSecret.OwnerReferences)
+	if dataChanged || ownerChanged {
+		existing.Data = adapterSecret.Data
+		existing.OwnerReferences = adapterSecret.OwnerReferences
+		if err := r.client.Update(ctx, &existing); err != nil {
+			return fmt.Errorf("updating adapter credential Secret: %w", err)
+		}
+		log.Info("Updated adapter credential Secret", "spoke", sc.Name, "secret", adapterSecret.Name)
+	}
+	return nil
+}
+
+func (r *SpokeClusterReconciler) ensureAdapterLabel(ctx context.Context, sc *hubv1alpha1.SpokeCluster) error {
+	secretName := credential.AdapterCredentialName(sc.Name)
+	if sc.Labels != nil && sc.Labels[credential.AdapterCredentialLabel] == secretName {
+		return nil
+	}
+	// Fetch a fresh copy so the Update call doesn't reset in-memory status conditions
+	var fresh hubv1alpha1.SpokeCluster
+	if err := r.client.Get(ctx, client.ObjectKeyFromObject(sc), &fresh); err != nil {
+		return fmt.Errorf("getting SpokeCluster for label update: %w", err)
+	}
+	if fresh.Labels == nil {
+		fresh.Labels = make(map[string]string)
+	}
+	fresh.Labels[credential.AdapterCredentialLabel] = secretName
+	if err := r.client.Update(ctx, &fresh); err != nil {
+		return fmt.Errorf("updating SpokeCluster labels: %w", err)
+	}
+	sc.Labels = fresh.Labels
+	sc.ResourceVersion = fresh.ResourceVersion
+	return nil
+}
+
+func defaultDiscoverAlertmanagerURL(ctx context.Context, spokeClient client.Client) (string, error) {
+	route := &unstructured.Unstructured{}
+	route.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "route.openshift.io",
+		Version: "v1",
+		Kind:    "Route",
+	})
+	routeKey := client.ObjectKey{
+		Name:      "alertmanager-main",
+		Namespace: provisioner.MonitoringNamespace,
+	}
+	if err := spokeClient.Get(ctx, routeKey, route); err != nil {
+		return "", fmt.Errorf("getting alertmanager-main Route: %w", err)
+	}
+	host, found, err := unstructured.NestedString(route.Object, "spec", "host")
+	if err != nil || !found || host == "" {
+		return "", fmt.Errorf("alertmanager-main Route missing spec.host")
+	}
+	return "https://" + host, nil
 }
 
 func (r *SpokeClusterReconciler) mapHubConfigToSpokeClusters(ctx context.Context, _ client.Object) []reconcile.Request {
