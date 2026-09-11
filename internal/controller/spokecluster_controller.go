@@ -433,6 +433,9 @@ func (r *SpokeClusterReconciler) setCondition(sc *hubv1alpha1.SpokeCluster, cond
 	})
 }
 
+// reconcileAdapters provisions spoke-side adapter resources, reads back the SA token,
+// discovers the AlertManager Route URL and ingress CA, creates the hub-side credential
+// Secret, and labels the SpokeCluster CR for adapter discovery.
 func (r *SpokeClusterReconciler) reconcileAdapters(ctx context.Context, sc *hubv1alpha1.SpokeCluster, spokeClient client.Client) error {
 	log := log.FromContext(ctx)
 
@@ -486,6 +489,9 @@ func (r *SpokeClusterReconciler) readAdapterToken(ctx context.Context, spokeClie
 	return string(token), nil
 }
 
+// readIngressCA reads the ingress CA bundle from the spoke's default-ingress-cert
+// ConfigMap in openshift-config-managed. Returns empty string if unavailable —
+// the adapter falls back to the system trust store.
 func (r *SpokeClusterReconciler) readIngressCA(ctx context.Context, spokeClient client.Client) string {
 	var cm corev1.ConfigMap
 	cmKey := client.ObjectKey{
@@ -504,6 +510,8 @@ func (r *SpokeClusterReconciler) readIngressCA(ctx context.Context, spokeClient 
 	return caBundle
 }
 
+// ensureAdapterCredentialSecret creates or updates the hub-side adapter credential
+// Secret. Skips the update if the data and owner references are unchanged.
 func (r *SpokeClusterReconciler) ensureAdapterCredentialSecret(ctx context.Context, sc *hubv1alpha1.SpokeCluster, alertmanagerURL, token, caBundle string) error {
 	log := log.FromContext(ctx)
 
@@ -541,6 +549,9 @@ func (r *SpokeClusterReconciler) ensureAdapterCredentialSecret(ctx context.Conte
 	return nil
 }
 
+// ensureAdapterLabel sets the hub.openshift.io/alert-credential-secret label on the
+// SpokeCluster CR so adapters can discover the credential Secret. Uses a fresh Get
+// to avoid resetting in-memory status conditions during the metadata Update.
 func (r *SpokeClusterReconciler) ensureAdapterLabel(ctx context.Context, sc *hubv1alpha1.SpokeCluster) error {
 	secretName := credential.AdapterCredentialName(sc.Name)
 	if sc.Labels != nil && sc.Labels[credential.AdapterCredentialLabel] == secretName {
@@ -563,6 +574,9 @@ func (r *SpokeClusterReconciler) ensureAdapterLabel(ctx context.Context, sc *hub
 	return nil
 }
 
+// defaultDiscoverAlertmanagerURL reads the alertmanager-main Route from the spoke's
+// openshift-monitoring namespace and returns its HTTPS URL. Uses unstructured access
+// to avoid a dependency on the OpenShift Route API types.
 func defaultDiscoverAlertmanagerURL(ctx context.Context, spokeClient client.Client) (string, error) {
 	route := &unstructured.Unstructured{}
 	route.SetGroupVersionKind(schema.GroupVersionKind{

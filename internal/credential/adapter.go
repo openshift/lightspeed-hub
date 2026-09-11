@@ -37,10 +37,15 @@ const (
 	AdapterCredentialLabel = "hub.openshift.io/alert-credential-secret"
 )
 
+// AdapterCredentialName returns the hub-side Secret name for a spoke's adapter credentials.
 func AdapterCredentialName(spokeName string) string {
 	return AdapterCredentialPrefix + spokeName
 }
 
+// BuildAdapterCredentialSecret constructs a hub-side Secret containing the adapter's
+// connection details for a spoke: AlertManager Route URL, SA bearer token, and
+// optionally the spoke's ingress CA for TLS verification. The Secret has a controller
+// owner reference to the SpokeCluster CR for automatic garbage collection.
 func BuildAdapterCredentialSecret(
 	sc *hubv1alpha1.SpokeCluster,
 	alertmanagerURL string,

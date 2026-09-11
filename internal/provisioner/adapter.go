@@ -38,6 +38,9 @@ const (
 	MonitoringAlertmanagerViewRole = "monitoring-alertmanager-view"
 )
 
+// ProvisionAdapter creates the spoke-side resources needed by the alerts-adapter:
+// a ServiceAccount, a monitoring-alertmanager-view RoleBinding in openshift-monitoring,
+// and a long-lived token Secret. Idempotent — AlreadyExists errors are ignored.
 func ProvisionAdapter(ctx context.Context, spokeClient client.Client) error {
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
@@ -94,6 +97,8 @@ func ProvisionAdapter(ctx context.Context, spokeClient client.Client) error {
 	return nil
 }
 
+// DeprovisionAdapter removes spoke-side adapter resources in reverse creation order.
+// Best-effort — errors are logged but do not block deletion.
 func DeprovisionAdapter(ctx context.Context, spokeClient client.Client, log logr.Logger) {
 	tokenSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
