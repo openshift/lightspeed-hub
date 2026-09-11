@@ -54,6 +54,9 @@ func ProvisionAdapter(ctx context.Context, spokeClient client.Client) error {
 		}
 	}
 
+	// Assumes standard OpenShift monitoring: the monitoring-alertmanager-view Role
+	// must exist in openshift-monitoring. On non-standard spokes (HyperShift, monitoring
+	// disabled), this binding grants nothing and AlertManager access will 401.
 	rb := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      AlertAdapterRoleBinding,
