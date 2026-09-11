@@ -101,6 +101,18 @@ func spokeTokenSecret() *corev1.Secret {
 	}
 }
 
+func spokeIngressCAConfigMap() *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "default-ingress-cert",
+			Namespace: "openshift-config-managed",
+		},
+		Data: map[string]string{
+			"ca-bundle.crt": "-----BEGIN CERTIFICATE-----\nfake-ingress-ca\n-----END CERTIFICATE-----\n",
+		},
+	}
+}
+
 func newReconcilerWithAdapterSupport(hubClient client.Client, credSource *fakeCredentialSource, spokeClient client.Client, ns string) *controller.SpokeClusterReconciler {
 	reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, ns)
 	reconciler.NewSpokeClient = func(cfg *rest.Config) (client.Client, error) {
@@ -217,7 +229,7 @@ var _ = Describe("SpokeClusterReconciler", func() {
 			spokeScheme := newTestScheme()
 			spokeClient := fake.NewClientBuilder().
 				WithScheme(spokeScheme).
-				WithObjects(tokenSecret).
+				WithObjects(tokenSecret, spokeIngressCAConfigMap()).
 				Build()
 
 			hubClient := fake.NewClientBuilder().
@@ -297,6 +309,7 @@ var _ = Describe("SpokeClusterReconciler", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(adapterSecret.Data[credential.AlertmanagerURLKey])).To(Equal("https://alertmanager-main-openshift-monitoring.apps.spoke.example.com"))
 			Expect(string(adapterSecret.Data[credential.TokenKey])).To(Equal("spoke-sa-token"))
+			Expect(string(adapterSecret.Data[credential.CABundleKey])).To(Equal("-----BEGIN CERTIFICATE-----\nfake-ingress-ca\n-----END CERTIFICATE-----\n"))
 			Expect(adapterSecret.OwnerReferences).To(HaveLen(1))
 			Expect(adapterSecret.OwnerReferences[0].Name).To(Equal(sc.Name))
 
@@ -554,7 +567,7 @@ current-context: spoke
 
 			spokeClient := fake.NewClientBuilder().
 				WithScheme(newTestScheme()).
-				WithObjects(spokeTokenSecret()).
+				WithObjects(spokeTokenSecret(), spokeIngressCAConfigMap()).
 				Build()
 
 			hubClient := fake.NewClientBuilder().

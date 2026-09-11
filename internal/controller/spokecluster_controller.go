@@ -453,8 +453,11 @@ func (r *SpokeClusterReconciler) reconcileAdapters(ctx context.Context, sc *hubv
 		return fmt.Errorf("discovering AlertManager URL: %w", err)
 	}
 
+	// Read the ingress CA from the spoke for Route TLS verification
+	caBundle := r.readIngressCA(ctx, spokeClient)
+
 	// Create or update the hub-side adapter credential Secret
-	if err := r.ensureAdapterCredentialSecret(ctx, sc, alertmanagerURL, token); err != nil {
+	if err := r.ensureAdapterCredentialSecret(ctx, sc, alertmanagerURL, token, caBundle); err != nil {
 		return fmt.Errorf("ensuring adapter credential Secret: %w", err)
 	}
 
@@ -483,10 +486,28 @@ func (r *SpokeClusterReconciler) readAdapterToken(ctx context.Context, spokeClie
 	return string(token), nil
 }
 
-func (r *SpokeClusterReconciler) ensureAdapterCredentialSecret(ctx context.Context, sc *hubv1alpha1.SpokeCluster, alertmanagerURL, token string) error {
+func (r *SpokeClusterReconciler) readIngressCA(ctx context.Context, spokeClient client.Client) string {
+	var cm corev1.ConfigMap
+	cmKey := client.ObjectKey{
+		Name:      "default-ingress-cert",
+		Namespace: "openshift-config-managed",
+	}
+	if err := spokeClient.Get(ctx, cmKey, &cm); err != nil {
+		log.FromContext(ctx).Info("Could not read ingress CA from spoke (adapter will use system trust store)", "error", err)
+		return ""
+	}
+	caBundle, ok := cm.Data["ca-bundle.crt"]
+	if !ok || caBundle == "" {
+		log.FromContext(ctx).Info("Ingress CA ConfigMap missing ca-bundle.crt key")
+		return ""
+	}
+	return caBundle
+}
+
+func (r *SpokeClusterReconciler) ensureAdapterCredentialSecret(ctx context.Context, sc *hubv1alpha1.SpokeCluster, alertmanagerURL, token, caBundle string) error {
 	log := log.FromContext(ctx)
 
-	adapterSecret, err := credential.BuildAdapterCredentialSecret(sc, alertmanagerURL, token, "", r.operatorNamespace, r.scheme)
+	adapterSecret, err := credential.BuildAdapterCredentialSecret(sc, alertmanagerURL, token, caBundle, r.operatorNamespace, r.scheme)
 	if err != nil {
 		return err
 	}
@@ -506,7 +527,8 @@ func (r *SpokeClusterReconciler) ensureAdapterCredentialSecret(ctx context.Conte
 		return fmt.Errorf("getting existing adapter credential Secret: %w", err)
 	}
 	dataChanged := !bytes.Equal(existing.Data[credential.AlertmanagerURLKey], adapterSecret.Data[credential.AlertmanagerURLKey]) ||
-		!bytes.Equal(existing.Data[credential.TokenKey], adapterSecret.Data[credential.TokenKey])
+		!bytes.Equal(existing.Data[credential.TokenKey], adapterSecret.Data[credential.TokenKey]) ||
+		!bytes.Equal(existing.Data[credential.CABundleKey], adapterSecret.Data[credential.CABundleKey])
 	ownerChanged := !ownerRefsEqual(existing.OwnerReferences, adapterSecret.OwnerReferences)
 	if dataChanged || ownerChanged {
 		existing.Data = adapterSecret.Data
