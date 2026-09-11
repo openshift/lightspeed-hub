@@ -42,11 +42,12 @@ import (
 )
 
 const (
-	spokeClusterFinalizer    = "hub.openshift.io/spoke-cleanup"
-	healthyRequeueAfter      = 5 * time.Minute
-	conditionTypeReady       = "Ready"
-	conditionTypeConnected   = "Connected"
-	conditionTypeProvisioned = "Provisioned"
+	spokeClusterFinalizer      = "hub.openshift.io/spoke-cleanup"
+	healthyRequeueAfter        = 5 * time.Minute
+	conditionTypeReady         = "Ready"
+	conditionTypeConnected     = "Connected"
+	conditionTypeProvisioned   = "Provisioned"
+	conditionTypeAdaptersReady = "AdaptersReady"
 
 	reasonHubConfigMissing         = "HubConfigMissing"
 	reasonUnsupportedMode          = "UnsupportedMode"
@@ -55,6 +56,7 @@ const (
 	reasonConnectionFailed         = "ConnectionFailed"
 	reasonProvisioningSucceeded    = "ProvisioningSucceeded"
 	reasonCredentialError          = "CredentialError"
+	reasonAdaptersReady            = "AdaptersReady"
 )
 
 // fakeCredentialSource is a mock CredentialSource for testing
@@ -76,6 +78,51 @@ func newTestScheme() *runtime.Scheme {
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = hubv1alpha1.AddToScheme(scheme)
 	return scheme
+}
+
+func fakeAlertmanagerURL(_ context.Context, _ client.Client) (string, error) {
+	return "https://alertmanager-main-openshift-monitoring.apps.spoke.example.com", nil
+}
+
+func spokeTokenSecret() *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "lightspeed-alert-adapter-token",
+			Namespace: "openshift-lightspeed-managed",
+			Annotations: map[string]string{
+				"kubernetes.io/service-account.name": "lightspeed-alert-adapter",
+			},
+		},
+		Type: corev1.SecretTypeServiceAccountToken,
+		Data: map[string][]byte{
+			"token":  []byte("spoke-sa-token"),
+			"ca.crt": []byte("spoke-ca"),
+		},
+	}
+}
+
+func spokeIngressCAConfigMap() *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "default-ingress-cert",
+			Namespace: "openshift-config-managed",
+		},
+		Data: map[string]string{
+			"ca-bundle.crt": "-----BEGIN CERTIFICATE-----\nfake-ingress-ca\n-----END CERTIFICATE-----\n",
+		},
+	}
+}
+
+func newReconcilerWithAdapterSupport(hubClient client.Client, credSource *fakeCredentialSource, spokeClient client.Client, ns string) *controller.SpokeClusterReconciler {
+	reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, ns)
+	reconciler.NewSpokeClient = func(cfg *rest.Config) (client.Client, error) {
+		return spokeClient, nil
+	}
+	reconciler.CheckConnectivity = func(cfg *rest.Config) error {
+		return nil
+	}
+	reconciler.DiscoverAlertmanagerURL = fakeAlertmanagerURL
+	return reconciler
 }
 
 func defaultHubConfig() *hubv1alpha1.HubConfig {
@@ -160,12 +207,29 @@ var _ = Describe("SpokeClusterReconciler", func() {
 			Expect(updated.Finalizers).To(ContainElement(spokeClusterFinalizer))
 		})
 
-		It("should reconcile happy path to Connected=True", func() {
+		It("should reconcile happy path to Connected=True with adapter orchestration", func() {
 			sc := newSpokeClusterWithFinalizer("test-spoke")
+
+			// Pre-create token Secret with populated token (simulates token controller)
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "lightspeed-alert-adapter-token",
+					Namespace: "openshift-lightspeed-managed",
+					Annotations: map[string]string{
+						"kubernetes.io/service-account.name": "lightspeed-alert-adapter",
+					},
+				},
+				Type: corev1.SecretTypeServiceAccountToken,
+				Data: map[string][]byte{
+					"token":  []byte("spoke-sa-token"),
+					"ca.crt": []byte("spoke-ca"),
+				},
+			}
 
 			spokeScheme := newTestScheme()
 			spokeClient := fake.NewClientBuilder().
 				WithScheme(spokeScheme).
+				WithObjects(tokenSecret, spokeIngressCAConfigMap()).
 				Build()
 
 			hubClient := fake.NewClientBuilder().
@@ -191,6 +255,9 @@ var _ = Describe("SpokeClusterReconciler", func() {
 			reconciler.CheckConnectivity = func(cfg *rest.Config) error {
 				return nil
 			}
+			reconciler.DiscoverAlertmanagerURL = func(ctx context.Context, spokeClient client.Client) (string, error) {
+				return "https://alertmanager-main-openshift-monitoring.apps.spoke.example.com", nil
+			}
 
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{Name: sc.Name},
@@ -214,6 +281,12 @@ var _ = Describe("SpokeClusterReconciler", func() {
 			Expect(provCondition.Status).To(Equal(metav1.ConditionTrue))
 			Expect(provCondition.Reason).To(Equal(reasonProvisioningSucceeded))
 
+			// Check AdaptersReady condition
+			adaptersCondition := meta.FindStatusCondition(updated.Status.Conditions, conditionTypeAdaptersReady)
+			Expect(adaptersCondition).NotTo(BeNil())
+			Expect(adaptersCondition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(adaptersCondition.Reason).To(Equal(reasonAdaptersReady))
+
 			// Check standing kubeconfig was created
 			secretKey := types.NamespacedName{
 				Name:      credential.StandingKubeconfigName(sc.Name),
@@ -225,6 +298,23 @@ var _ = Describe("SpokeClusterReconciler", func() {
 			Expect(secret.Data).To(HaveKey(credential.KubeconfigKey))
 			Expect(secret.OwnerReferences).To(HaveLen(1))
 			Expect(secret.OwnerReferences[0].Name).To(Equal(sc.Name))
+
+			// Check adapter credential Secret was created
+			adapterSecretKey := types.NamespacedName{
+				Name:      credential.AdapterCredentialName(sc.Name),
+				Namespace: testNamespace,
+			}
+			var adapterSecret corev1.Secret
+			err = hubClient.Get(ctx, adapterSecretKey, &adapterSecret)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(adapterSecret.Data[credential.AlertmanagerURLKey])).To(Equal("https://alertmanager-main-openshift-monitoring.apps.spoke.example.com"))
+			Expect(string(adapterSecret.Data[credential.TokenKey])).To(Equal("spoke-sa-token"))
+			Expect(string(adapterSecret.Data[credential.CABundleKey])).To(Equal("-----BEGIN CERTIFICATE-----\nfake-ingress-ca\n-----END CERTIFICATE-----\n"))
+			Expect(adapterSecret.OwnerReferences).To(HaveLen(1))
+			Expect(adapterSecret.OwnerReferences[0].Name).To(Equal(sc.Name))
+
+			// Check SpokeCluster label
+			Expect(updated.Labels).To(HaveKeyWithValue(credential.AdapterCredentialLabel, credential.AdapterCredentialName(sc.Name)))
 		})
 
 		It("should set Connected=False on credential error", func() {
@@ -475,9 +565,9 @@ current-context: spoke
 		It("should be idempotent - reconcile twice converges", func() {
 			sc := newSpokeClusterWithFinalizer("test-spoke")
 
-			spokeScheme := newTestScheme()
 			spokeClient := fake.NewClientBuilder().
-				WithScheme(spokeScheme).
+				WithScheme(newTestScheme()).
+				WithObjects(spokeTokenSecret(), spokeIngressCAConfigMap()).
 				Build()
 
 			hubClient := fake.NewClientBuilder().
@@ -496,13 +586,7 @@ current-context: spoke
 				},
 			}
 
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, testNamespace)
-			reconciler.NewSpokeClient = func(cfg *rest.Config) (client.Client, error) {
-				return spokeClient, nil
-			}
-			reconciler.CheckConnectivity = func(cfg *rest.Config) error {
-				return nil
-			}
+			reconciler := newReconcilerWithAdapterSupport(hubClient, credSource, spokeClient, testNamespace)
 
 			// First reconcile
 			result1, err := reconciler.Reconcile(ctx, ctrl.Request{

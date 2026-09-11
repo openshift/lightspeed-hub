@@ -16,7 +16,7 @@ The Lightspeed Hub is a Kubernetes operator that runs on a central hub cluster a
 
 6. **SpokeCluster Controller** — reconciles SpokeCluster CRs. Validates spoke connectivity, deploys standalone adapter pods on hub, manages credential lifecycle, updates status conditions.
 7. **Credential Broker** — pluggable interface returning a `rest.Config` for a given spoke. Implementations: `SecretCredentialSource` (stored kubeconfig), `MCECredentialSource` (MCE cluster-proxy). [PLANNED] `BackplaneCredentialSource`.
-8. **Adapter Orchestrator** — manages standalone adapter Deployments on the hub. For each adapter type, provisions per-spoke credential Secrets (`spoke-{adapter-type}-kubeconfig-{spoke-name}`) and labels SpokeCluster CRs for adapter discovery. Adapters watch SpokeCluster CRs to discover spokes dynamically. The alerts-adapter is the first implementation — see `alerts-adapter-multicluster.md` in the parent spec.
+8. **Adapter Orchestrator** — provisions per-spoke adapter credential Secrets on the hub and labels SpokeCluster CRs for adapter discovery. For each adapter type, creates a spoke-side SA with minimum RBAC, obtains a token, discovers the spoke's event-source endpoint, and stores everything in a credential Secret (`spoke-{adapter-type}-credential-{spoke-name}`). Adapters watch SpokeCluster CRs to discover spokes dynamically — no per-spoke adapter Deployments. The alerts-adapter is the first implementation — see `alerts-adapter-multicluster.md` in the parent spec.
 
 ### Spoke Onboarding
 
