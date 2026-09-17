@@ -18,26 +18,77 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	hubv1alpha1 "github.com/openshift/lightspeed-hub/api/v1alpha1"
 )
 
-// +kubebuilder:rbac:groups=hub.openshift.io,resources=hubconfigs,verbs=get;list;watch
+const hubConfigAdapterFinalizer = "hub.openshift.io/adapter-cleanup"
 
-// HubConfigReconciler exists only to register a watch on HubConfig. All spoke
-// lifecycle logic lives in the SpokeCluster controller, which watches HubConfig
-// events via mapHubConfigToSpokeClusters. No finalizer is needed — the
-// SpokeCluster controller handles both "deleting HubConfig" and "missing
-// HubConfig" identically via unmanageSpoke.
 type HubConfigReconciler struct {
-	client client.Client
+	client            client.Client
+	operatorNamespace string
+	adapterImage      string
 }
 
-func NewHubConfigReconciler(c client.Client) *HubConfigReconciler {
-	return &HubConfigReconciler{client: c}
+func NewHubConfigReconciler(c client.Client, operatorNamespace, adapterImage string) *HubConfigReconciler {
+	return &HubConfigReconciler{
+		client:            c,
+		operatorNamespace: operatorNamespace,
+		adapterImage:      adapterImage,
+	}
+}
+
+// +kubebuilder:rbac:groups=hub.openshift.io,resources=hubconfigs,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=hub.openshift.io,resources=hubconfigs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;create;update;delete
+// +kubebuilder:rbac:groups="",resources=serviceaccounts;configmaps,verbs=get;list;create;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings;clusterroles;clusterrolebindings,verbs=get;list;create;update;delete
+
+func (r *HubConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	var hc hubv1alpha1.HubConfig
+	if err := r.client.Get(ctx, req.NamespacedName, &hc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	if !hc.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&hc, hubConfigAdapterFinalizer) {
+			logger.Info("HubConfig deleting, tearing down adapter stack")
+			if err := teardownAdapterStack(ctx, r.client, r.operatorNamespace); err != nil {
+				return ctrl.Result{}, fmt.Errorf("tearing down adapter stack: %w", err)
+			}
+			controllerutil.RemoveFinalizer(&hc, hubConfigAdapterFinalizer)
+			if err := r.client.Update(ctx, &hc); err != nil {
+				return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	if !controllerutil.ContainsFinalizer(&hc, hubConfigAdapterFinalizer) {
+		controllerutil.AddFinalizer(&hc, hubConfigAdapterFinalizer)
+		if err := r.client.Update(ctx, &hc); err != nil {
+			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
+		}
+	}
+
+	if err := ensureAdapterStack(ctx, r.client, r.operatorNamespace, r.adapterImage); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring adapter stack: %w", err)
+	}
+
+	logger.Info("Adapter stack ensured")
+	return ctrl.Result{}, nil
 }
 
 func (r *HubConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -45,8 +96,4 @@ func (r *HubConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&hubv1alpha1.HubConfig{}).
 		Named("hubconfig").
 		Complete(r)
-}
-
-func (r *HubConfigReconciler) Reconcile(_ context.Context, _ ctrl.Request) (ctrl.Result, error) {
-	return ctrl.Result{}, nil
 }

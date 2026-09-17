@@ -38,6 +38,7 @@ help: ## Display this help.
 ##@ Development
 
 OPERATOR_NAMESPACE ?= openshift-lightspeed
+ALERTS_ADAPTER_IMAGE ?= quay.io/openshift-lightspeed/lightspeed-agentic-alerts-adapter:latest
 
 METRICS_BIND_ADDRESS ?= :18080
 HEALTH_PROBE_BIND_ADDRESS ?= :18081
@@ -100,6 +101,7 @@ build: fmt vet ## Build manager binary.
 run: install vet ## Run the controller locally.
 	go run ./cmd/main.go \
 		--namespace=$(OPERATOR_NAMESPACE) \
+		--alerts-adapter-image=$(ALERTS_ADAPTER_IMAGE) \
 		--metrics-bind-address=$(METRICS_BIND_ADDRESS) \
 		--health-probe-bind-address=$(HEALTH_PROBE_BIND_ADDRESS)
 

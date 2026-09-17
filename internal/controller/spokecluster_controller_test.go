@@ -23,6 +23,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -77,6 +78,7 @@ func newTestScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = hubv1alpha1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
 	return scheme
 }
 
@@ -857,6 +859,108 @@ current-context: spoke
 			event := <-fakeRecorder.Events
 			Expect(event).To(ContainSubstring("Warning"))
 			Expect(event).To(ContainSubstring("SpokeCleanupFailed"))
+		})
+	})
+
+	Context("Adapter restart", func() {
+		It("should restart adapter deployment after adapter orchestration", func() {
+			sc := newSpokeClusterWithFinalizer("test-spoke")
+			tokenSecret := spokeTokenSecret()
+
+			spokeClient := fake.NewClientBuilder().
+				WithScheme(newTestScheme()).
+				WithObjects(tokenSecret, spokeIngressCAConfigMap()).
+				Build()
+
+			adapterDep := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "lightspeed-hub-alerts-adapter",
+					Namespace: testNamespace,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "lightspeed-hub-alerts-adapter"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "lightspeed-hub-alerts-adapter"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Name: "adapter", Image: "test"}},
+						},
+					},
+				},
+			}
+
+			hubClient := fake.NewClientBuilder().
+				WithScheme(newTestScheme()).
+				WithObjects(sc, defaultHubConfig(), adapterDep).
+				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
+				Build()
+
+			reconciler := newReconcilerWithAdapterSupport(hubClient, &fakeCredentialSource{
+				cfg: &rest.Config{Host: "https://api.spoke.example.com:6443", BearerToken: "t", TLSClientConfig: rest.TLSClientConfig{CAData: []byte("ca")}},
+			}, spokeClient, testNamespace)
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: sc.Name}})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			err = hubClient.Get(ctx, types.NamespacedName{Name: "lightspeed-hub-alerts-adapter", Namespace: testNamespace}, &dep)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dep.Spec.Template.Annotations).To(HaveKey("hub.openshift.io/restart-timestamp"))
+		})
+
+		It("should not restart adapter when spoke label is already present", func() {
+			sc := newSpokeClusterWithFinalizer("test-spoke")
+			// Pre-set the adapter label so ensureAdapterLabel returns false
+			sc.Labels = map[string]string{
+				"hub.openshift.io/alert-credential-secret": "spoke-alert-credential-test-spoke",
+			}
+
+			tokenSecret := spokeTokenSecret()
+			spokeClient := fake.NewClientBuilder().
+				WithScheme(newTestScheme()).
+				WithObjects(tokenSecret, spokeIngressCAConfigMap()).
+				Build()
+
+			adapterDep := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "lightspeed-hub-alerts-adapter",
+					Namespace: testNamespace,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "lightspeed-hub-alerts-adapter"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "lightspeed-hub-alerts-adapter"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Name: "adapter", Image: "test"}},
+						},
+					},
+				},
+			}
+
+			hubClient := fake.NewClientBuilder().
+				WithScheme(newTestScheme()).
+				WithObjects(sc, defaultHubConfig(), adapterDep).
+				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
+				Build()
+
+			reconciler := newReconcilerWithAdapterSupport(hubClient, &fakeCredentialSource{
+				cfg: &rest.Config{Host: "https://api.spoke.example.com:6443", BearerToken: "t", TLSClientConfig: rest.TLSClientConfig{CAData: []byte("ca")}},
+			}, spokeClient, testNamespace)
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: sc.Name}})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			err = hubClient.Get(ctx, types.NamespacedName{Name: "lightspeed-hub-alerts-adapter", Namespace: testNamespace}, &dep)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dep.Spec.Template.Annotations).NotTo(HaveKey("hub.openshift.io/restart-timestamp"))
 		})
 	})
 })

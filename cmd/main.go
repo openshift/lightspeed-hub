@@ -47,15 +47,17 @@ func init() {
 
 func main() {
 	var (
-		metricsAddr string
-		healthAddr  string
-		namespace   string
-		leaderElect bool
+		metricsAddr        string
+		healthAddr         string
+		namespace          string
+		alertsAdapterImage string
+		leaderElect        bool
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to.")
 	flag.StringVar(&healthAddr, "health-probe-bind-address", ":8081", "The address the health probe endpoint binds to.")
 	flag.StringVar(&namespace, "namespace", "", "The namespace where the operator runs (required).")
+	flag.StringVar(&alertsAdapterImage, "alerts-adapter-image", "", "Container image for the alerts-adapter Deployment.")
 	flag.BoolVar(&leaderElect, "leader-elect", false, "Enable leader election for controller manager.")
 	flag.Parse()
 
@@ -69,6 +71,11 @@ func main() {
 			os.Exit(1)
 		}
 		namespace = ns
+	}
+
+	if alertsAdapterImage == "" {
+		log.Error(nil, "--alerts-adapter-image flag is required")
+		os.Exit(1)
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
@@ -96,6 +103,8 @@ func main() {
 
 	if err := controller.NewHubConfigReconciler(
 		mgr.GetClient(),
+		namespace,
+		alertsAdapterImage,
 	).SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to create controller", "controller", "HubConfig")
 		os.Exit(1)

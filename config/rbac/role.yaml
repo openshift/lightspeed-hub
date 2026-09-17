@@ -7,6 +7,16 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  - serviceaccounts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+- apiGroups:
+  - ""
+  resources:
   - events
   verbs:
   - create
@@ -23,16 +33,19 @@ rules:
   - update
   - watch
 - apiGroups:
-  - hub.openshift.io
+  - apps
   resources:
-  - hubconfigs
+  - deployments
   verbs:
+  - create
+  - delete
   - get
   - list
-  - watch
+  - update
 - apiGroups:
   - hub.openshift.io
   resources:
+  - hubconfigs
   - spokeclusters
   verbs:
   - get
@@ -43,6 +56,7 @@ rules:
 - apiGroups:
   - hub.openshift.io
   resources:
+  - hubconfigs/finalizers
   - spokeclusters/finalizers
   verbs:
   - update
@@ -53,4 +67,17 @@ rules:
   verbs:
   - get
   - patch
+  - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  - clusterroles
+  - rolebindings
+  - roles
+  verbs:
+  - create
+  - delete
+  - get
+  - list
   - update
