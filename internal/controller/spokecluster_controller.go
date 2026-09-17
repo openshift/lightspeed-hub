@@ -347,6 +347,11 @@ func (r *SpokeClusterReconciler) cleanupSpokeResources(ctx context.Context, sc *
 	} else {
 		logger.Info("Deleted adapter credential Secret", "secret", adapterSecret.Name)
 	}
+
+	// Restart adapter to pick up the target set change
+	if err := restartAdapterDeployment(ctx, r.client, r.operatorNamespace); err != nil {
+		logger.Error(err, "failed to restart adapter after spoke cleanup")
+	}
 }
 
 func (r *SpokeClusterReconciler) unmanageSpoke(ctx context.Context, sc *hubv1alpha1.SpokeCluster, reason, message string) (ctrl.Result, error) {
@@ -465,8 +470,14 @@ func (r *SpokeClusterReconciler) reconcileAdapters(ctx context.Context, sc *hubv
 	}
 
 	// Label the SpokeCluster CR for adapter discovery
-	if err := r.ensureAdapterLabel(ctx, sc); err != nil {
+	changed, err := r.ensureAdapterLabel(ctx, sc)
+	if err != nil {
 		return fmt.Errorf("labeling SpokeCluster: %w", err)
+	}
+	if changed {
+		if err := restartAdapterDeployment(ctx, r.client, r.operatorNamespace); err != nil {
+			return fmt.Errorf("restarting adapter: %w", err)
+		}
 	}
 
 	log.Info("Adapter orchestration complete", "spoke", sc.Name)
@@ -552,26 +563,27 @@ func (r *SpokeClusterReconciler) ensureAdapterCredentialSecret(ctx context.Conte
 // ensureAdapterLabel sets the hub.openshift.io/alert-credential-secret label on the
 // SpokeCluster CR so adapters can discover the credential Secret. Uses a fresh Get
 // to avoid resetting in-memory status conditions during the metadata Update.
-func (r *SpokeClusterReconciler) ensureAdapterLabel(ctx context.Context, sc *hubv1alpha1.SpokeCluster) error {
+// Returns true if the label was added or changed, false if it was already present.
+func (r *SpokeClusterReconciler) ensureAdapterLabel(ctx context.Context, sc *hubv1alpha1.SpokeCluster) (bool, error) {
 	secretName := credential.AdapterCredentialName(sc.Name)
 	if sc.Labels != nil && sc.Labels[credential.AdapterCredentialLabel] == secretName {
-		return nil
+		return false, nil
 	}
 	// Fetch a fresh copy so the Update call doesn't reset in-memory status conditions
 	var fresh hubv1alpha1.SpokeCluster
 	if err := r.client.Get(ctx, client.ObjectKeyFromObject(sc), &fresh); err != nil {
-		return fmt.Errorf("getting SpokeCluster for label update: %w", err)
+		return false, fmt.Errorf("getting SpokeCluster for label update: %w", err)
 	}
 	if fresh.Labels == nil {
 		fresh.Labels = make(map[string]string)
 	}
 	fresh.Labels[credential.AdapterCredentialLabel] = secretName
 	if err := r.client.Update(ctx, &fresh); err != nil {
-		return fmt.Errorf("updating SpokeCluster labels: %w", err)
+		return false, fmt.Errorf("updating SpokeCluster labels: %w", err)
 	}
 	sc.Labels = fresh.Labels
 	sc.ResourceVersion = fresh.ResourceVersion
-	return nil
+	return true, nil
 }
 
 // defaultDiscoverAlertmanagerURL reads the alertmanager-main Route from the spoke's
