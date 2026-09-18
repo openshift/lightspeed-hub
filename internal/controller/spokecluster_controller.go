@@ -48,7 +48,6 @@ import (
 
 const (
 	spokeClusterFinalizer = "hub.openshift.io/spoke-cleanup"
-	healthyRequeueAfter   = 5 * time.Minute
 	spokeDialTimeout      = 10 * time.Second
 
 	conditionTypeReady         = "Ready"
@@ -192,7 +191,7 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Check connectivity using the standing kubeconfig
 	if err := r.CheckConnectivity(standingCfg); err != nil {
 		log.Error(err, "Connectivity check failed", "spoke", sc.Name)
-		return r.failWithCondition(ctx, &sc, conditionTypeConnected, reasonConnectionFailed, err)
+		return r.handleConnectivityFailure(ctx, &sc, err)
 	}
 	r.setCondition(&sc, conditionTypeConnected, metav1.ConditionTrue, reasonConnectionSucceeded, "spoke API server is reachable")
 
@@ -221,7 +220,7 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	log.Info("Successfully reconciled spoke", "spoke", sc.Name)
-	return ctrl.Result{RequeueAfter: healthyRequeueAfter}, nil
+	return ctrl.Result{}, nil
 }
 
 func (r *SpokeClusterReconciler) reconcileDelete(ctx context.Context, sc *hubv1alpha1.SpokeCluster) (ctrl.Result, error) {
@@ -380,6 +379,15 @@ func (r *SpokeClusterReconciler) failWithCondition(ctx context.Context, sc *hubv
 		log.FromContext(ctx).Error(updateErr, "Failed to update status")
 	}
 	return ctrl.Result{}, err
+}
+
+func (r *SpokeClusterReconciler) handleConnectivityFailure(ctx context.Context, sc *hubv1alpha1.SpokeCluster, err error) (ctrl.Result, error) {
+	r.setCondition(sc, conditionTypeConnected, metav1.ConditionFalse, reasonConnectionFailed, err.Error())
+	r.setCondition(sc, conditionTypeReady, metav1.ConditionFalse, reasonConnectionFailed, err.Error())
+	if updateErr := r.client.Status().Update(ctx, sc); updateErr != nil {
+		return ctrl.Result{}, fmt.Errorf("updating status: %w", updateErr)
+	}
+	return ctrl.Result{}, nil
 }
 
 // loadStandingKubeconfig reads the standing kubeconfig Secret and parses it

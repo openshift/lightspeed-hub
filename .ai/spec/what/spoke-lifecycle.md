@@ -98,10 +98,11 @@ The `proxy-url` field is handled transparently by Go's HTTP transport. Consumers
 
 ### Steady State
 
-18. The hub periodically validates spoke connectivity by checking kube-api reachability via the standing kubeconfig. Connectivity is re-checked on each reconcile (periodic requeue for healthy spokes, workqueue backoff for failures).
+18. [PLANNED: OLS-4152] Spoke connectivity MUST be monitored by a dedicated health handler running independently of the reconciler. The health handler runs on a configurable interval (CLI flag `--health-check-interval`, default 5 minutes) as a `manager.RunnableFunc` registered with the controller-runtime manager. For each SpokeCluster CR, it reads the standing kubeconfig Secret (cached via informer), calls `discovery.ServerVersion()` on the spoke (1 API call), and patches the `Connected` status condition if the connectivity state changed. The status patch uses `client.MergeFrom` to minimize conflict surface with the reconciler. Spokes without a standing kubeconfig Secret are skipped (not yet onboarded or unmanaged). The health handler MUST NOT perform credential loading, standing kubeconfig updates, or spoke-side provisioning.
+18a. [PLANNED: OLS-4152] The reconciler MUST be purely event-driven with no `RequeueAfter` on the happy path. It is triggered only by watch events: SpokeCluster spec changes, HubConfig changes, and `Connected` status condition changes from the health handler. The reconciler retains its full logic (credential loading, standing kubeconfig update, connectivity check, provisioning, adapters) regardless of trigger source — the connectivity check is a prerequisite for provisioning.
 19. If a spoke becomes unreachable, the hub MUST set `Connected=False` on the SpokeCluster status. Operations on other spokes are not affected.
-20. When connectivity is restored, the hub MUST re-validate and set `Connected=True`.
-20a. Failed reconciles (credential errors, connectivity failures, provisioning failures) MUST return an error to the workqueue for exponential backoff. Periodic requeue is only for healthy spokes.
+20. When connectivity is restored, the hub MUST re-validate and set `Connected=True`. [PLANNED: OLS-4152] The health handler sets `Connected=True`, which triggers the reconciler to re-run full provisioning and repair any drift.
+20a. [PLANNED: OLS-4152] Connectivity failures in the reconciler MUST set `Connected=False` and return without error — the health handler handles periodic rechecking, so workqueue backoff retries are unnecessary. Credential errors, provisioning failures, and adapter failures MUST return an error to the workqueue for exponential backoff (these are transient and worth retrying).
 
 ### Decommission
 
@@ -126,6 +127,7 @@ The `proxy-url` field is handled transparently by Go's HTTP transport. Consumers
 |---|---|
 | OLS-2984 | Initial implementation — spoke lifecycle MVP |
 | OLS-3948 | Decommission warning Events and spec alignment |
+| OLS-4152 | Lightweight spoke health check with separate time handler — rules 18, 18a, 20, 20a |
 | — | Embedded adapter support: install AgenticRun CRD on spoke, start dedicated watcher |
 | — | Spoke-local mode: deploy full agentic stack to spoke during registration |
 | — | Standing kubeconfig token rotation for MCE mode |
