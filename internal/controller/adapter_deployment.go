@@ -233,10 +233,6 @@ func adapterDeployment(namespace, image string) *appsv1.Deployment {
 							},
 							Env: []corev1.EnvVar{
 								{
-									Name:  "ALERTMANAGER_URL",
-									Value: "https://alertmanager-main.openshift-monitoring.svc:9094",
-								},
-								{
 									Name: "POD_NAMESPACE",
 									ValueFrom: &corev1.EnvVarSource{
 										FieldRef: &corev1.ObjectFieldSelector{
