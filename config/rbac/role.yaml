@@ -33,6 +33,20 @@ rules:
   - update
   - watch
 - apiGroups:
+  - agentic.openshift.io
+  resources:
+  - agenticolsconfigs
+  verbs:
+  - get
+- apiGroups:
+  - agentic.openshift.io
+  resources:
+  - agenticruns
+  verbs:
+  - create
+  - get
+  - list
+- apiGroups:
   - apps
   resources:
   - deployments
@@ -68,6 +82,15 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - monitoring.coreos.com
+  resourceNames:
+  - main
+  resources:
+  - alertmanagers/api
+  verbs:
+  - get
+  - list
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:

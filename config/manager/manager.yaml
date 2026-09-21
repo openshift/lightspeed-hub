@@ -64,6 +64,8 @@ spec:
           - --leader-elect
           - --health-probe-bind-address=:8081
           - --namespace=openshift-lightspeed
+          # TODO: temporary test image, replace with production image once available
+          - --alerts-adapter-image=quay.io/hasun/laa-multi:latest
         image: controller:latest
         name: manager
         ports:
