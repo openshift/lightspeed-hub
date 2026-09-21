@@ -50,6 +50,10 @@ func NewHubConfigReconciler(c client.Client, operatorNamespace, adapterImage str
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;create;update;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;configmaps,verbs=get;list;create;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings;clusterroles;clusterrolebindings,verbs=get;list;create;update;delete
+// RBAC escalation: the operator must hold every permission it grants to the adapter
+// +kubebuilder:rbac:groups=agentic.openshift.io,resources=agenticruns,verbs=create;list;get
+// +kubebuilder:rbac:groups=agentic.openshift.io,resources=agenticolsconfigs,verbs=get
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=alertmanagers/api,resourceNames=main,verbs=get;list
 
 func (r *HubConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
