@@ -168,6 +168,11 @@ func adapterConfigMap(namespace string) *corev1.ConfigMap {
 		Data: map[string]string{
 			"config.yaml": `filtering:
   allowedReceivers: []
+tools:
+  skills:
+  - image: quay.io/openshiftanalytics/agentic-skills:latest
+    paths:
+     - /skills/cluster-troubleshoot/investigate-alert
 `,
 		},
 	}
