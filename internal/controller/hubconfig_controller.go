@@ -47,9 +47,9 @@ func NewHubConfigReconciler(c client.Client, operatorNamespace, adapterImage str
 
 // +kubebuilder:rbac:groups=hub.openshift.io,resources=hubconfigs,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=hub.openshift.io,resources=hubconfigs/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;create;update;delete
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;configmaps,verbs=get;list;create;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings;clusterroles;clusterrolebindings,verbs=get;list;create;update;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings;clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;delete
 // RBAC escalation: the operator must hold every permission it grants to the adapter
 // +kubebuilder:rbac:groups=agentic.openshift.io,resources=agenticruns,verbs=create;list;get
 // +kubebuilder:rbac:groups=agentic.openshift.io,resources=agenticolsconfigs,verbs=get
