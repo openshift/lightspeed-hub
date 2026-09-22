@@ -56,6 +56,7 @@ rules:
   - get
   - list
   - update
+  - watch
 - apiGroups:
   - hub.openshift.io
   resources:
@@ -104,3 +105,4 @@ rules:
   - get
   - list
   - update
+  - watch
