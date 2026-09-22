@@ -19,7 +19,6 @@ package controller_test
 import (
 	"context"
 	"fmt"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -44,7 +43,6 @@ import (
 
 const (
 	spokeClusterFinalizer      = "hub.openshift.io/spoke-cleanup"
-	healthyRequeueAfter        = 5 * time.Minute
 	conditionTypeReady         = "Ready"
 	conditionTypeConnected     = "Connected"
 	conditionTypeProvisioned   = "Provisioned"
@@ -266,7 +264,7 @@ var _ = Describe("SpokeClusterReconciler", func() {
 			})
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(healthyRequeueAfter))
+			Expect(result).To(Equal(ctrl.Result{}))
 
 			// Check status
 			var updated hubv1alpha1.SpokeCluster
@@ -380,8 +378,8 @@ var _ = Describe("SpokeClusterReconciler", func() {
 				NamespacedName: types.NamespacedName{Name: sc.Name},
 			})
 
-			Expect(err).To(HaveOccurred())
-			Expect(result.RequeueAfter).To(BeZero())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(ctrl.Result{}))
 
 			// Check status
 			var updated hubv1alpha1.SpokeCluster
@@ -595,7 +593,7 @@ current-context: spoke
 				NamespacedName: types.NamespacedName{Name: sc.Name},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result1.RequeueAfter).To(Equal(healthyRequeueAfter))
+			Expect(result1).To(Equal(ctrl.Result{}))
 
 			var firstUpdate hubv1alpha1.SpokeCluster
 			err = hubClient.Get(ctx, types.NamespacedName{Name: sc.Name}, &firstUpdate)
@@ -610,7 +608,7 @@ current-context: spoke
 				NamespacedName: types.NamespacedName{Name: sc.Name},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result2.RequeueAfter).To(Equal(healthyRequeueAfter))
+			Expect(result2).To(Equal(ctrl.Result{}))
 
 			var secondUpdate hubv1alpha1.SpokeCluster
 			err = hubClient.Get(ctx, types.NamespacedName{Name: sc.Name}, &secondUpdate)

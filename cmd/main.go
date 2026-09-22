@@ -19,6 +19,7 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
@@ -47,11 +48,12 @@ func init() {
 
 func main() {
 	var (
-		metricsAddr        string
-		healthAddr         string
-		namespace          string
-		alertsAdapterImage string
-		leaderElect        bool
+		metricsAddr         string
+		healthAddr          string
+		namespace           string
+		alertsAdapterImage  string
+		healthCheckInterval time.Duration
+		leaderElect         bool
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to.")
@@ -59,6 +61,7 @@ func main() {
 	flag.StringVar(&namespace, "namespace", "", "The namespace where the operator runs (required).")
 	flag.StringVar(&alertsAdapterImage, "alerts-adapter-image", "", "Container image for the alerts-adapter Deployment.")
 	flag.BoolVar(&leaderElect, "leader-elect", false, "Enable leader election for controller manager.")
+	flag.DurationVar(&healthCheckInterval, "health-check-interval", 5*time.Minute, "Interval between spoke connectivity health checks.")
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
@@ -71,6 +74,11 @@ func main() {
 			os.Exit(1)
 		}
 		namespace = ns
+	}
+
+	if healthCheckInterval <= 0 {
+		log.Error(nil, "--health-check-interval must be greater than 0")
+		os.Exit(1)
 	}
 
 	if alertsAdapterImage == "" {
@@ -107,6 +115,15 @@ func main() {
 		alertsAdapterImage,
 	).SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to create controller", "controller", "HubConfig")
+		os.Exit(1)
+	}
+
+	if err := mgr.Add(controller.NewSpokeHealthHandler(
+		mgr.GetClient(),
+		namespace,
+		healthCheckInterval,
+	)); err != nil {
+		log.Error(err, "unable to create spoke health handler")
 		os.Exit(1)
 	}
 

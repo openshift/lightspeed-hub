@@ -14,7 +14,8 @@ The Lightspeed Hub is a Kubernetes operator that runs on a central hub cluster a
 
 ### Controllers
 
-6. **SpokeCluster Controller** — reconciles SpokeCluster CRs. Validates spoke connectivity, deploys standalone adapter pods on hub, manages credential lifecycle, updates status conditions.
+6. **SpokeCluster Controller** — reconciles SpokeCluster CRs. Validates spoke connectivity, deploys standalone adapter pods on hub, manages credential lifecycle, updates status conditions. [PLANNED: OLS-4152] The reconciler becomes purely event-driven (no `RequeueAfter`), triggered by spec changes, HubConfig changes, and `Connected` status changes from the health handler.
+6a. [PLANNED: OLS-4152] **Spoke Health Handler** — a `manager.RunnableFunc` that runs independently of the reconciler on a configurable interval (CLI flag `--health-check-interval`, default 5 min). Probes each managed spoke's kube-api via `discovery.ServerVersion()` using the standing kubeconfig and patches the `Connected` status condition on change. Status changes trigger the SpokeCluster reconciler via the watch.
 7. **Credential Broker** — pluggable interface returning a `rest.Config` for a given spoke. Implementations: `SecretCredentialSource` (stored kubeconfig), `MCECredentialSource` (MCE cluster-proxy). [PLANNED] `BackplaneCredentialSource`.
 8. **Adapter Orchestrator** — provisions per-spoke adapter credential Secrets on the hub and labels SpokeCluster CRs for adapter discovery. For each adapter type, creates a spoke-side SA with minimum RBAC, obtains a token, discovers the spoke's event-source endpoint, and stores everything in a credential Secret (`spoke-{adapter-type}-credential-{spoke-name}`). Adapters watch SpokeCluster CRs to discover spokes dynamically — no per-spoke adapter Deployments. The alerts-adapter is the first implementation — see `alerts-adapter-multicluster.md` in the parent spec.
 8a. **Adapter Deployment Manager** — the HubConfig controller creates and manages a dedicated multicluster alerts-adapter Deployment (`lightspeed-hub-alerts-adapter`) on the hub, separate from the single-cluster alerts-adapter deployed by the agentic-operator. Resources: SA, RBAC, ConfigMap (`hub-alerts-adapter-config`), Deployment. The adapter is deployed when HubConfig exists and removed when HubConfig is deleted. The adapter image is configured via the `--alerts-adapter-image` CLI flag on the hub operator.
@@ -27,7 +28,7 @@ The Lightspeed Hub is a Kubernetes operator that runs on a central hub cluster a
 
 ### Spoke Health Monitoring
 
-12. The hub MUST continuously monitor spoke health (API server reachability via the credential broker).
+12. The hub MUST continuously monitor spoke health (API server reachability via the credential broker). [PLANNED: OLS-4152] Monitoring is performed by a dedicated health handler, not the reconciler's periodic requeue.
 13. Spoke health status MUST be reflected in SpokeCluster status conditions (`Connected`, `AdaptersReady`).
 14. A spoke transitioning to unhealthy MUST NOT block operations on other spokes.
 
@@ -183,3 +184,4 @@ status:
 | Ticket | Summary |
 |---|---|
 | OLS-2984 | Initial implementation — hub operator MVP |
+| OLS-4152 | Lightweight spoke health check with separate time handler — rules 6, 6a, 12 |
