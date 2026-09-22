@@ -83,7 +83,7 @@ var _ = Describe("SpokeHealthHandler", func() {
 			return fmt.Errorf("connection refused")
 		}
 
-		handler.RunOnce(ctx)
+		handler.CheckAll(ctx)
 
 		var updated hubv1alpha1.SpokeCluster
 		Expect(hubClient.Get(ctx, types.NamespacedName{Name: sc.Name}, &updated)).To(Succeed())
@@ -108,7 +108,7 @@ var _ = Describe("SpokeHealthHandler", func() {
 			return nil
 		}
 
-		handler.RunOnce(ctx)
+		handler.CheckAll(ctx)
 
 		var updated hubv1alpha1.SpokeCluster
 		Expect(hubClient.Get(ctx, types.NamespacedName{Name: sc.Name}, &updated)).To(Succeed())
@@ -136,7 +136,7 @@ var _ = Describe("SpokeHealthHandler", func() {
 			return nil
 		}
 
-		handler.RunOnce(ctx)
+		handler.CheckAll(ctx)
 
 		var after hubv1alpha1.SpokeCluster
 		Expect(hubClient.Get(ctx, types.NamespacedName{Name: sc.Name}, &after)).To(Succeed())
@@ -158,7 +158,7 @@ var _ = Describe("SpokeHealthHandler", func() {
 			return nil
 		}
 
-		handler.RunOnce(ctx)
+		handler.CheckAll(ctx)
 
 		var updated hubv1alpha1.SpokeCluster
 		Expect(hubClient.Get(ctx, types.NamespacedName{Name: sc.Name}, &updated)).To(Succeed())
@@ -190,7 +190,7 @@ var _ = Describe("SpokeHealthHandler", func() {
 			return nil
 		}
 
-		handler.RunOnce(ctx)
+		handler.CheckAll(ctx)
 
 		// spoke-1: unchanged (bad Secret key, skipped)
 		var u1 hubv1alpha1.SpokeCluster

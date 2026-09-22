@@ -52,18 +52,20 @@ func NewSpokeHealthHandler(c client.Client, ns string, interval time.Duration) *
 func (h *SpokeHealthHandler) Start(ctx context.Context) error {
 	logger := log.FromContext(ctx).WithName("spoke-health")
 	logger.Info("Starting spoke health handler", "interval", h.checkInterval)
-	h.RunOnce(ctx)
+	h.CheckAll(ctx)
+	ticker := time.NewTicker(h.checkInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(h.checkInterval):
-			h.RunOnce(ctx)
+		case <-ticker.C:
+			h.CheckAll(ctx)
 		}
 	}
 }
 
-func (h *SpokeHealthHandler) RunOnce(ctx context.Context) {
+func (h *SpokeHealthHandler) CheckAll(ctx context.Context) {
 	logger := log.FromContext(ctx).WithName("spoke-health")
 
 	var spokeList hubv1alpha1.SpokeClusterList
