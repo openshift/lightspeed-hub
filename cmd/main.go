@@ -76,6 +76,11 @@ func main() {
 		namespace = ns
 	}
 
+	if healthCheckInterval <= 0 {
+		log.Error(nil, "--health-check-interval must be greater than 0")
+		os.Exit(1)
+	}
+
 	if alertsAdapterImage == "" {
 		log.Error(nil, "--alerts-adapter-image flag is required")
 		os.Exit(1)

@@ -96,6 +96,7 @@ func (h *SpokeHealthHandler) checkSpoke(ctx context.Context, sc *hubv1alpha1.Spo
 
 	kubeconfigBytes, ok := secret.Data[credential.KubeconfigKey]
 	if !ok {
+		logger.Info("Standing kubeconfig Secret missing kubeconfig key", "secret", secretKey.Name)
 		return
 	}
 
