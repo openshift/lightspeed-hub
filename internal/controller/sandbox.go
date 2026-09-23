@@ -31,6 +31,7 @@ const (
 	sandboxSAName                   = "lightspeed-agent"
 	sandboxCRBClusterReader         = "lightspeed-hub:sandbox-cluster-reader"
 	sandboxCRBClusterMonitoringView = "lightspeed-hub:sandbox-cluster-monitoring-view"
+	sandboxCRBMonitoringRulesView   = "lightspeed-hub:sandbox-monitoring-rules-view"
 )
 
 func sandboxBindings(namespace string) []*rbacv1.ClusterRoleBinding {
@@ -54,6 +55,19 @@ func sandboxBindings(namespace string) []*rbacv1.ClusterRoleBinding {
 				APIGroup: rbacv1.GroupName,
 				Kind:     "ClusterRole",
 				Name:     "cluster-monitoring-view",
+			},
+			Subjects: []rbacv1.Subject{{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      sandboxSAName,
+				Namespace: namespace,
+			}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: sandboxCRBMonitoringRulesView},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     "monitoring-rules-view",
 			},
 			Subjects: []rbacv1.Subject{{
 				Kind:      rbacv1.ServiceAccountKind,
