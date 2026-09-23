@@ -40,6 +40,9 @@ const (
 
 	// ClusterRoleBindingMonitoringView is the ClusterRoleBinding name for cluster-monitoring-view
 	ClusterRoleBindingMonitoringView = "lightspeed-hub:cluster-monitoring-view"
+
+	// ClusterRoleBindingMonitoringRulesView is the ClusterRoleBinding name for monitoring-rules-view
+	ClusterRoleBindingMonitoringRulesView = "lightspeed-hub:monitoring-rules-view"
 )
 
 // Provision creates the required resources on the spoke cluster.
@@ -118,6 +121,30 @@ func Provision(ctx context.Context, spokeClient client.Client) error {
 		}
 	}
 
+	// 5. Create ClusterRoleBinding for monitoring-rules-view
+	crbMonitoringRules := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ClusterRoleBindingMonitoringRulesView,
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name:     "monitoring-rules-view",
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      ServiceAccountName,
+				Namespace: ManagedNamespace,
+			},
+		},
+	}
+	if err := spokeClient.Create(ctx, crbMonitoringRules); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating ClusterRoleBinding monitoring-rules-view: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -126,7 +153,19 @@ func Provision(ctx context.Context, spokeClient client.Client) error {
 func Deprovision(ctx context.Context, spokeClient client.Client, log logr.Logger) {
 	// Delete in reverse order: ClusterRoleBindings, ServiceAccount, Namespace
 
-	// 1. Delete ClusterRoleBinding cluster-monitoring-view
+	// 1. Delete ClusterRoleBinding monitoring-rules-view
+	crbMonitoringRules := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ClusterRoleBindingMonitoringRulesView,
+		},
+	}
+	if err := spokeClient.Delete(ctx, crbMonitoringRules); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.Error(err, "failed to delete ClusterRoleBinding", "name", ClusterRoleBindingMonitoringRulesView)
+		}
+	}
+
+	// 2. Delete ClusterRoleBinding cluster-monitoring-view
 	crbMonitoring := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: ClusterRoleBindingMonitoringView,
@@ -138,7 +177,7 @@ func Deprovision(ctx context.Context, spokeClient client.Client, log logr.Logger
 		}
 	}
 
-	// 2. Delete ClusterRoleBinding cluster-reader
+	// 3. Delete ClusterRoleBinding cluster-reader
 	crbReader := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: ClusterRoleBindingClusterReader,
@@ -150,7 +189,7 @@ func Deprovision(ctx context.Context, spokeClient client.Client, log logr.Logger
 		}
 	}
 
-	// 3. Delete ServiceAccount
+	// 4. Delete ServiceAccount
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      ServiceAccountName,
@@ -163,7 +202,7 @@ func Deprovision(ctx context.Context, spokeClient client.Client, log logr.Logger
 		}
 	}
 
-	// 4. Delete Namespace
+	// 5. Delete Namespace
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: ManagedNamespace,
