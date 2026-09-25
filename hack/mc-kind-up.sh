@@ -21,9 +21,20 @@ SPOKE2=lightspeed-spoke2
 
 # Prerequisites
 command -v kind    >/dev/null 2>&1 || { echo "ERROR: kind not found in PATH"; exit 1; }
-command -v docker  >/dev/null 2>&1 || { echo "ERROR: docker not found in PATH"; exit 1; }
 command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl not found in PATH"; exit 1; }
 python3 --version  >/dev/null 2>&1 || { echo "ERROR: python3 not found in PATH"; exit 1; }
+
+# Detect container tool (docker preferred, podman fallback)
+if command -v docker >/dev/null 2>&1; then
+  CONTAINER_TOOL=docker
+elif command -v podman >/dev/null 2>&1; then
+  CONTAINER_TOOL=podman
+  # kind needs this env var to use podman as its container runtime
+  export KIND_EXPERIMENTAL_PROVIDER=podman
+else
+  echo "ERROR: neither docker nor podman found in PATH"; exit 1
+fi
+echo "==> Using container tool: $CONTAINER_TOOL"
 
 TMPDIR=$(mktemp -d)
 
@@ -66,14 +77,14 @@ INTERVAL_FOUND=$(KUBECONFIG="$HUB_KC" kubectl get deployment "$DEPLOY_NAME" \
 [ "$INTERVAL_FOUND" -gt 0 ] || { echo "ERROR: health-check-interval not found in deployment args after patch"; exit 1; }
 echo "health-check-interval patch verified."
 
-# Build internal kubeconfigs using Docker network IPs
+# Build internal kubeconfigs using container network IPs
 # insecure-skip-tls-verify avoids SAN matching issues with container IPs
 make_internal_kubeconfig() {
   local ext_kc="$1"
   local container="$2"
   local out="$3"
   local ip
-  ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container")
+  ip=$($CONTAINER_TOOL inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container")
   [ -n "$ip" ] || { echo "ERROR: could not get IP for container $container"; exit 1; }
   python3 - "$ext_kc" "$ip" "$out" <<'PYEOF'
 import sys, yaml
