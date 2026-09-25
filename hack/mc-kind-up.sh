@@ -53,17 +53,23 @@ kind create cluster --name "$SPOKE2" --kubeconfig "$SPOKE2_EXT"
 # Build operator image and load into hub cluster
 echo "==> Building operator image $IMG..."
 IMG="$IMG" make docker-build
-# podman stores locally-built images with a localhost/ prefix; kind needs the bare name.
-# Tag without the prefix so kind load can find it.
+
+# With podman, locally-built images are stored as localhost/IMAGE:TAG.
+# Use that full reference for both kind load and the Deployment so the image name
+# inside the kind node's containerd matches what the Deployment spec references.
 if [ "$CONTAINER_TOOL" = "podman" ]; then
-  podman tag "localhost/$IMG" "$IMG" 2>/dev/null || true
+  KIND_IMG="localhost/$IMG"
+else
+  KIND_IMG="$IMG"
 fi
-kind load docker-image "$IMG" --name "$HUB"
+
+echo "==> Loading image $KIND_IMG into kind hub cluster..."
+kind load docker-image "$KIND_IMG" --name "$HUB"
 
 # Deploy operator on hub (installs CRDs and operator Deployment via kustomize)
 echo "==> Installing CRDs and deploying operator on hub..."
 KUBECONFIG="$HUB_KC" make install
-IMG="$IMG" KUBECONFIG="$HUB_KC" make deploy
+IMG="$KIND_IMG" KUBECONFIG="$HUB_KC" make deploy
 
 # Patch health-check-interval to short value for fast e2e polling
 echo "==> Patching health-check-interval to $HEALTH_INTERVAL..."
