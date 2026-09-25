@@ -309,15 +309,20 @@ var _ = Describe("Spoke lifecycle", Ordered, func() {
 	//         hub-side cleanup proceeds, finalizer released (OLS-3948 AC2)
 	// -----------------------------------------------------------------------
 	It("emits SpokeCleanupFailed event and releases finalizer when spoke cleanup cannot parse kubeconfig", func() {
-		By("Corrupting spoke1 standing kubeconfig (simulates unreachable cleanup path)")
-		// The reconciler watches SpokeCluster and HubConfig only — NOT Secrets.
-		// Corrupting the Secret does not trigger a reconcile that would restore it.
-		// Deleting the SpokeCluster immediately triggers reconcileDelete, which reads
-		// the corrupted bytes and sets spokeCleanupFailed=true, emitting the Event.
-		GinkgoWriter.Println("Corrupting then immediately deleting — no reconcile window between the two ops")
+		By("Corrupting credential Secret and standing kubeconfig to force SpokeCleanupFailed")
+		// Corrupt the credential Secret FIRST so the reconciler fails at GetRESTConfig
+		// and returns early — ensureStandingKubeconfig is never reached, so the standing
+		// kubeconfig can't be restored even if the reconciler's backoff fires between our
+		// two corruption calls. Then corrupt the standing kubeconfig for the cleanup to fail.
+		var credSec corev1.Secret
+		Expect(hubClient.Get(ctx, client.ObjectKey{Name: credSecretName1, Namespace: operatorNamespace}, &credSec)).
+			To(Succeed())
+		credSec.Data["kubeconfig"] = []byte("not-valid-kubeconfig {{{{ garbage")
+		Expect(hubClient.Update(ctx, &credSec)).To(Succeed())
+		// Credential is now garbage — any reconcile between here and Delete is blocked
 		corruptStandingKubeconfig(spoke1Name)
 
-		By("Deleting spoke1 SpokeCluster CR immediately after corruption")
+		By("Deleting spoke1 SpokeCluster CR")
 		Expect(hubClient.Delete(ctx, &hubv1alpha1.SpokeCluster{
 			ObjectMeta: metav1.ObjectMeta{Name: spoke1Name},
 		})).To(Succeed())
