@@ -55,16 +55,22 @@ echo "==> Building operator image $IMG..."
 IMG="$IMG" make docker-build
 
 # With podman, locally-built images are stored as localhost/IMAGE:TAG.
-# Use that full reference for both kind load and the Deployment so the image name
-# inside the kind node's containerd matches what the Deployment spec references.
+# kind load docker-image doesn't find them reliably via podman's image store,
+# so we use podman save + kind load image-archive as a workaround.
+# The Deployment uses the same localhost/ reference so containerd finds it.
 if [ "$CONTAINER_TOOL" = "podman" ]; then
   KIND_IMG="localhost/$IMG"
+  TMP_TAR=$(mktemp --suffix=.tar)
+  echo "==> Saving $KIND_IMG to archive..."
+  podman save "$KIND_IMG" -o "$TMP_TAR"
+  echo "==> Loading image archive into kind hub cluster..."
+  kind load image-archive "$TMP_TAR" --name "$HUB"
+  rm -f "$TMP_TAR"
 else
   KIND_IMG="$IMG"
+  echo "==> Loading image $KIND_IMG into kind hub cluster..."
+  kind load docker-image "$KIND_IMG" --name "$HUB"
 fi
-
-echo "==> Loading image $KIND_IMG into kind hub cluster..."
-kind load docker-image "$KIND_IMG" --name "$HUB"
 
 # Deploy operator on hub (installs CRDs and operator Deployment via kustomize)
 echo "==> Installing CRDs and deploying operator on hub..."
