@@ -19,7 +19,7 @@ USER 0
 
 RUN CGO_ENABLED=1 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -tags strictfipsruntime -o manager ./cmd/
 
-FROM registry.redhat.io/ubi9/ubi-minimal:9.8-1786380870
+FROM registry.redhat.io/ubi9/ubi-minimal:9.8-1790074235
 
 WORKDIR /
 COPY --from=builder /workspace/manager .
