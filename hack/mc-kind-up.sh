@@ -53,6 +53,11 @@ kind create cluster --name "$SPOKE2" --kubeconfig "$SPOKE2_EXT"
 # Build operator image and load into hub cluster
 echo "==> Building operator image $IMG..."
 IMG="$IMG" make docker-build
+# podman stores locally-built images with a localhost/ prefix; kind needs the bare name.
+# Tag without the prefix so kind load can find it.
+if [ "$CONTAINER_TOOL" = "podman" ]; then
+  podman tag "localhost/$IMG" "$IMG" 2>/dev/null || true
+fi
 kind load docker-image "$IMG" --name "$HUB"
 
 # Deploy operator on hub (installs CRDs and operator Deployment via kustomize)

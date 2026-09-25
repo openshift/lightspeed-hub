@@ -84,10 +84,13 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes.
 	$(GOLANGCI_LINT) run --fix
 
 MC_E2E_ENV_FILE ?= /tmp/lightspeed-hub-mc-e2e-env
+# Use a dedicated image tag for e2e so the Makefile's exported IMG=:latest doesn't bleed in.
+# Override with MC_E2E_IMG=myregistry/myimage:tag make mc-e2e for a custom image.
+MC_E2E_IMG ?= lightspeed-hub-operator:e2e
 
 .PHONY: mc-e2e
 mc-e2e: build ## Run T1 multicluster e2e tests using kind (provisions hub + 2 spoke clusters).
-	hack/mc-kind-up.sh $(MC_E2E_ENV_FILE)
+	IMG=$(MC_E2E_IMG) hack/mc-kind-up.sh $(MC_E2E_ENV_FILE)
 	@bash -c '. $(MC_E2E_ENV_FILE) && \
 		go test -v -tags mc_e2e -count=1 ./test/e2e/... -timeout 10m; \
 		EXIT=$$?; hack/mc-kind-down.sh; exit $$EXIT'
