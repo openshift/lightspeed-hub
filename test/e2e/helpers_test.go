@@ -123,9 +123,9 @@ func stopSpokeContainer(containerName string) {
 	if containerName == "" {
 		Skip("MC_SPOKE_CONTAINER_NAMES not set — skipping spoke-unreachable test (not running under kind)")
 	}
-	GinkgoWriter.Printf("Stopping kind container %s\n", containerName)
-	out, err := exec.Command("docker", "stop", containerName).CombinedOutput()
-	Expect(err).NotTo(HaveOccurred(), "docker stop %s: %s", containerName, out)
+	GinkgoWriter.Printf("Stopping kind container %s via %s\n", containerName, containerTool)
+	out, err := exec.Command(containerTool, "stop", containerName).CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "%s stop %s: %s", containerTool, containerName, out)
 }
 
 // startSpokeContainer restarts a previously stopped kind cluster container.
@@ -133,9 +133,9 @@ func startSpokeContainer(containerName string) {
 	if containerName == "" {
 		return
 	}
-	GinkgoWriter.Printf("Starting kind container %s\n", containerName)
-	out, err := exec.Command("docker", "start", containerName).CombinedOutput()
-	Expect(err).NotTo(HaveOccurred(), "docker start %s: %s", containerName, out)
+	GinkgoWriter.Printf("Starting kind container %s via %s\n", containerName, containerTool)
+	out, err := exec.Command(containerTool, "start", containerName).CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "%s start %s: %s", containerTool, containerName, out)
 }
 
 // corruptStandingKubeconfig replaces the standing kubeconfig Secret's kubeconfig bytes

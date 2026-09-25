@@ -52,6 +52,9 @@ var (
 
 	spoke1ContainerName string
 	spoke2ContainerName string
+
+	// containerTool is the container runtime used to stop/start kind nodes (docker or podman).
+	containerTool string
 )
 
 func TestE2E(t *testing.T) {
@@ -83,12 +86,16 @@ var _ = BeforeSuite(func() {
 	spoke1APIServer = mustExtractServer(spoke1InternalKubeconfig)
 	spoke2APIServer = mustExtractServer(spoke2InternalKubeconfig)
 
-	// Container names are optional — only present in T1 (kind)
+	// Container names and tool are optional — only present in T1 (kind)
 	if containers := os.Getenv("MC_SPOKE_CONTAINER_NAMES"); containers != "" {
 		parts := strings.Split(containers, ",")
 		Expect(parts).To(HaveLen(2), "MC_SPOKE_CONTAINER_NAMES must have exactly 2 entries")
 		spoke1ContainerName = strings.TrimSpace(parts[0])
 		spoke2ContainerName = strings.TrimSpace(parts[1])
+	}
+	containerTool = os.Getenv("MC_CONTAINER_TOOL")
+	if containerTool == "" {
+		containerTool = "docker" // default for T2 / non-kind environments
 	}
 })
 
