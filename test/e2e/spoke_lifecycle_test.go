@@ -20,14 +20,12 @@ package e2e_test
 
 import (
 	"fmt"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -245,22 +243,12 @@ var _ = Describe("Spoke lifecycle", Ordered, func() {
 	// then re-creates spoke1 for Test 6.
 	// -----------------------------------------------------------------------
 	It("cleans up spoke1 (reachable) with no SpokeCleanupFailed event", func() {
-		// Restart spoke1 if stopped in Test 3 (kind only)
+		// Re-enable spoke1 API server if it was blocked in Test 3 (kind only)
 		if spoke1ContainerName != "" {
-			By("Restarting spoke1 container")
+			By("Unblocking spoke1 API server (removing iptables DROP rule)")
 			startSpokeContainer(spoke1ContainerName)
-			// After a container stop/start the kind API server needs extra time to initialize.
-			// Use a longer timeout than the default 2-minute window.
-			By("Waiting for spoke1 Connected=True after restart (extended timeout)")
-			Eventually(func() bool {
-				var sc hubv1alpha1.SpokeCluster
-				if err := hubClient.Get(ctx, client.ObjectKey{Name: spoke1Name}, &sc); err != nil {
-					return false
-				}
-				c := meta.FindStatusCondition(sc.Status.Conditions, "Connected")
-				return c != nil && c.Status == metav1.ConditionTrue
-			}, 5*time.Minute, 10*time.Second).Should(BeTrue(),
-				"SpokeCluster %s did not become Connected=True within 5m after container restart", spoke1Name)
+			By("Waiting for spoke1 Connected=True after unblock")
+			waitForCondition(spoke1Name, "Connected")
 		}
 
 		By("Deleting SpokeCluster for spoke1")

@@ -117,25 +117,29 @@ func spokeHasAlertManager(spokeClient client.Client) bool {
 	return err == nil
 }
 
-// stopSpokeContainer stops the kind cluster container by name.
+// stopSpokeContainer makes the spoke's API server unreachable by inserting an iptables
+// DROP rule for port 6443 inside the kind container. This keeps the container running
+// (so the IP doesn't change) while making the API server unreachable.
 // Skips the calling test if containerName is empty (T2: no container names set).
 func stopSpokeContainer(containerName string) {
 	if containerName == "" {
 		Skip("MC_SPOKE_CONTAINER_NAMES not set — skipping spoke-unreachable test (not running under kind)")
 	}
-	GinkgoWriter.Printf("Stopping kind container %s via %s\n", containerName, containerTool)
-	out, err := exec.Command(containerTool, "stop", containerName).CombinedOutput()
-	Expect(err).NotTo(HaveOccurred(), "%s stop %s: %s", containerTool, containerName, out)
+	GinkgoWriter.Printf("Blocking port 6443 on %s via iptables\n", containerName)
+	out, err := exec.Command(containerTool, "exec", containerName,
+		"iptables", "-I", "INPUT", "-p", "tcp", "--dport", "6443", "-j", "DROP").CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "iptables block on %s: %s", containerName, out)
 }
 
-// startSpokeContainer restarts a previously stopped kind cluster container.
+// startSpokeContainer re-enables the spoke's API server by removing the iptables DROP rule.
 func startSpokeContainer(containerName string) {
 	if containerName == "" {
 		return
 	}
-	GinkgoWriter.Printf("Starting kind container %s via %s\n", containerName, containerTool)
-	out, err := exec.Command(containerTool, "start", containerName).CombinedOutput()
-	Expect(err).NotTo(HaveOccurred(), "%s start %s: %s", containerTool, containerName, out)
+	GinkgoWriter.Printf("Unblocking port 6443 on %s via iptables\n", containerName)
+	// Ignore error: rule may not exist (e.g. AfterAll called without a prior stop)
+	exec.Command(containerTool, "exec", containerName, //nolint:errcheck
+		"iptables", "-D", "INPUT", "-p", "tcp", "--dport", "6443", "-j", "DROP").Run()
 }
 
 // corruptStandingKubeconfig replaces the standing kubeconfig Secret's kubeconfig bytes
