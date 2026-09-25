@@ -118,36 +118,43 @@ func spokeHasAlertManager(spokeClient client.Client) bool {
 	return err == nil
 }
 
-// makeCredentialUnreachable simulates a spoke being unreachable by replacing the
-// credential Secret's kubeconfig with one pointing to a non-routable IP (192.0.2.1,
-// TEST-NET per RFC 5737). It then annotates the SpokeCluster to trigger a reconcile,
-// which updates the standing kubeconfig and fails connectivity → Connected=False.
-// Works in both T1 (kind) and T2 (real OCP).
+// makeCredentialUnreachable simulates a spoke being unreachable by redirecting both
+// the credential Secret AND the standing kubeconfig to 192.0.2.1:6443 (TEST-NET,
+// RFC 5737, guaranteed non-routable). The health handler reads the standing kubeconfig
+// directly every 15s and will set Connected=False independently of the reconciler.
+// No annotation is needed — the health handler is the detection mechanism.
 func makeCredentialUnreachable(ctx context.Context, spokeName, credSecretName string) {
 	const unreachableServer = "https://192.0.2.1:6443"
 
-	secretKey := client.ObjectKey{Name: credSecretName, Namespace: operatorNamespace}
-	var secret corev1.Secret
-	Expect(hubClient.Get(ctx, secretKey, &secret)).To(Succeed())
-
-	cfg, err := clientcmd.Load(secret.Data["kubeconfig"])
-	Expect(err).NotTo(HaveOccurred(), "loading credential kubeconfig for unreachable redirect")
-	for name := range cfg.Clusters {
-		cfg.Clusters[name].Server = unreachableServer
-		cfg.Clusters[name].InsecureSkipTLSVerify = true
-		cfg.Clusters[name].CertificateAuthorityData = nil
+	redirectKubeconfig := func(key client.ObjectKey) {
+		var secret corev1.Secret
+		Expect(hubClient.Get(ctx, key, &secret)).To(Succeed())
+		cfg, err := clientcmd.Load(secret.Data["kubeconfig"])
+		Expect(err).NotTo(HaveOccurred())
+		for name := range cfg.Clusters {
+			cfg.Clusters[name].Server = unreachableServer
+			cfg.Clusters[name].InsecureSkipTLSVerify = true
+			cfg.Clusters[name].CertificateAuthorityData = nil
+		}
+		modified, err := clientcmd.Write(*cfg)
+		Expect(err).NotTo(HaveOccurred())
+		secret.Data["kubeconfig"] = modified
+		Expect(hubClient.Update(ctx, &secret)).To(Succeed())
 	}
-	modified, err := clientcmd.Write(*cfg)
-	Expect(err).NotTo(HaveOccurred())
-	secret.Data["kubeconfig"] = modified
-	Expect(hubClient.Update(ctx, &secret)).To(Succeed())
 
-	touchSpokeCluster(ctx, spokeName, "unreachable")
-	GinkgoWriter.Printf("Credential for spoke %s redirected to %s; reconcile triggered\n", spokeName, unreachableServer)
+	redirectKubeconfig(client.ObjectKey{Name: credSecretName, Namespace: operatorNamespace})
+	redirectKubeconfig(client.ObjectKey{
+		Name:      fmt.Sprintf("spoke-kubeconfig-%s", spokeName),
+		Namespace: operatorNamespace,
+	})
+	GinkgoWriter.Printf("Credential and standing kubeconfig for spoke %s redirected to %s; "+
+		"health handler will detect within ~15s\n", spokeName, unreachableServer)
 }
 
 // restoreCredential restores the credential Secret to the original kubeconfig bytes
-// and triggers a reconcile so the standing kubeconfig is updated and connectivity restored.
+// and triggers a reconcile (via SpokeCluster annotation) so the reconciler rebuilds
+// the standing kubeconfig and connectivity is re-established → Connected=True.
+// A brief sleep before the annotation allows the informer cache to propagate.
 func restoreCredential(ctx context.Context, spokeName, credSecretName string, original []byte) {
 	secretKey := client.ObjectKey{Name: credSecretName, Namespace: operatorNamespace}
 	var secret corev1.Secret
@@ -155,6 +162,9 @@ func restoreCredential(ctx context.Context, spokeName, credSecretName string, or
 	secret.Data["kubeconfig"] = original
 	Expect(hubClient.Update(ctx, &secret)).To(Succeed())
 
+	// Allow informer cache to propagate before triggering the reconcile so the
+	// reconciler reads the restored kubeconfig and rebuilds a valid standing kubeconfig.
+	time.Sleep(3 * time.Second)
 	touchSpokeCluster(ctx, spokeName, "")
 	GinkgoWriter.Printf("Credential for spoke %s restored; reconcile triggered\n", spokeName)
 }
