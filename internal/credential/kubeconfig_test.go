@@ -190,6 +190,45 @@ func TestBuildStandingKubeconfig_ClientCertAuth(t *testing.T) {
 	}
 }
 
+func TestBuildStandingKubeconfig_InsecureSkipTLSVerify(t *testing.T) {
+	// When the admin kubeconfig uses insecure-skip-tls-verify, the standing kubeconfig
+	// must propagate that flag; otherwise the connectivity check fails with x509 errors.
+	cfg := &rest.Config{
+		Host:        "https://10.89.0.15:6443",
+		BearerToken: "some-token",
+		TLSClientConfig: rest.TLSClientConfig{
+			Insecure: true, // no CA, skip TLS verification
+		},
+	}
+
+	sc := spokeCluster()
+	sc.Spec.APIServer = "https://10.89.0.15:6443"
+	operatorNS := "openshift-lightspeed"
+
+	secret, err := BuildStandingKubeconfig(cfg, sc, operatorNS, kubeconfigTestScheme())
+	if err != nil {
+		t.Fatalf("BuildStandingKubeconfig() error = %v", err)
+	}
+
+	kubeconfigBytes, ok := secret.Data[KubeconfigKey]
+	if !ok {
+		t.Fatalf("secret.Data missing %q key", KubeconfigKey)
+	}
+
+	roundTripCfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfigBytes)
+	if err != nil {
+		t.Fatalf("failed to parse generated kubeconfig: %v", err)
+	}
+
+	if !roundTripCfg.TLSClientConfig.Insecure {
+		t.Error("standing kubeconfig must have insecure-skip-tls-verify=true when admin kubeconfig has it; " +
+			"without it, connectivity checks fail with x509 certificate errors")
+	}
+	if roundTripCfg.Host != sc.Spec.APIServer {
+		t.Errorf("Host = %q, want %q", roundTripCfg.Host, sc.Spec.APIServer)
+	}
+}
+
 func TestBuildStandingKubeconfig_FallbackToHost(t *testing.T) {
 	// When SpokeCluster.Spec.APIServer is empty, the standing kubeconfig should fall back to cfg.Host
 	cfg := &rest.Config{
