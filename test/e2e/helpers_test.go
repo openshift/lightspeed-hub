@@ -19,8 +19,8 @@ limitations under the License.
 package e2e_test
 
 import (
+	"context"
 	"fmt"
-	"os/exec"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -29,6 +29,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	hubv1alpha1 "github.com/openshift/lightspeed-hub/api/v1alpha1"
@@ -117,29 +118,57 @@ func spokeHasAlertManager(spokeClient client.Client) bool {
 	return err == nil
 }
 
-// stopSpokeContainer makes the spoke's API server unreachable by inserting an iptables
-// DROP rule for port 6443 inside the kind container. This keeps the container running
-// (so the IP doesn't change) while making the API server unreachable.
-// Skips the calling test if containerName is empty (T2: no container names set).
-func stopSpokeContainer(containerName string) {
-	if containerName == "" {
-		Skip("MC_SPOKE_CONTAINER_NAMES not set — skipping spoke-unreachable test (not running under kind)")
+// makeCredentialUnreachable simulates a spoke being unreachable by replacing the
+// credential Secret's kubeconfig with one pointing to a non-routable IP (192.0.2.1,
+// TEST-NET per RFC 5737). It then annotates the SpokeCluster to trigger a reconcile,
+// which updates the standing kubeconfig and fails connectivity → Connected=False.
+// Works in both T1 (kind) and T2 (real OCP).
+func makeCredentialUnreachable(ctx context.Context, spokeName, credSecretName string) {
+	const unreachableServer = "https://192.0.2.1:6443"
+
+	secretKey := client.ObjectKey{Name: credSecretName, Namespace: operatorNamespace}
+	var secret corev1.Secret
+	Expect(hubClient.Get(ctx, secretKey, &secret)).To(Succeed())
+
+	cfg, err := clientcmd.Load(secret.Data["kubeconfig"])
+	Expect(err).NotTo(HaveOccurred(), "loading credential kubeconfig for unreachable redirect")
+	for name := range cfg.Clusters {
+		cfg.Clusters[name].Server = unreachableServer
+		cfg.Clusters[name].InsecureSkipTLSVerify = true
+		cfg.Clusters[name].CertificateAuthorityData = nil
 	}
-	GinkgoWriter.Printf("Blocking port 6443 on %s via iptables\n", containerName)
-	out, err := exec.Command(containerTool, "exec", containerName,
-		"iptables", "-I", "INPUT", "-p", "tcp", "--dport", "6443", "-j", "DROP").CombinedOutput()
-	Expect(err).NotTo(HaveOccurred(), "iptables block on %s: %s", containerName, out)
+	modified, err := clientcmd.Write(*cfg)
+	Expect(err).NotTo(HaveOccurred())
+	secret.Data["kubeconfig"] = modified
+	Expect(hubClient.Update(ctx, &secret)).To(Succeed())
+
+	touchSpokeCluster(ctx, spokeName, "unreachable")
+	GinkgoWriter.Printf("Credential for spoke %s redirected to %s; reconcile triggered\n", spokeName, unreachableServer)
 }
 
-// startSpokeContainer re-enables the spoke's API server by removing the iptables DROP rule.
-func startSpokeContainer(containerName string) {
-	if containerName == "" {
-		return
+// restoreCredential restores the credential Secret to the original kubeconfig bytes
+// and triggers a reconcile so the standing kubeconfig is updated and connectivity restored.
+func restoreCredential(ctx context.Context, spokeName, credSecretName string, original []byte) {
+	secretKey := client.ObjectKey{Name: credSecretName, Namespace: operatorNamespace}
+	var secret corev1.Secret
+	Expect(hubClient.Get(ctx, secretKey, &secret)).To(Succeed())
+	secret.Data["kubeconfig"] = original
+	Expect(hubClient.Update(ctx, &secret)).To(Succeed())
+
+	touchSpokeCluster(ctx, spokeName, "")
+	GinkgoWriter.Printf("Credential for spoke %s restored; reconcile triggered\n", spokeName)
+}
+
+// touchSpokeCluster adds/updates an annotation on the SpokeCluster to trigger a
+// controller-runtime watch event and force a reconcile.
+func touchSpokeCluster(ctx context.Context, spokeName, value string) {
+	var sc hubv1alpha1.SpokeCluster
+	Expect(hubClient.Get(ctx, client.ObjectKey{Name: spokeName}, &sc)).To(Succeed())
+	if sc.Annotations == nil {
+		sc.Annotations = make(map[string]string)
 	}
-	GinkgoWriter.Printf("Unblocking port 6443 on %s via iptables\n", containerName)
-	// Ignore error: rule may not exist (e.g. AfterAll called without a prior stop)
-	exec.Command(containerTool, "exec", containerName, //nolint:errcheck
-		"iptables", "-D", "INPUT", "-p", "tcp", "--dport", "6443", "-j", "DROP").Run()
+	sc.Annotations["e2e.test/trigger"] = value
+	Expect(hubClient.Update(ctx, &sc)).To(Succeed())
 }
 
 // corruptStandingKubeconfig replaces the standing kubeconfig Secret's kubeconfig bytes

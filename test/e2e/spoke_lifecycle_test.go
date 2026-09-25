@@ -112,16 +112,20 @@ var _ = Describe("Spoke lifecycle", Ordered, func() {
 	})
 
 	AfterAll(func() {
+		By("AfterAll: restoring spoke1 credential in case Test 3 ran but Test 5 did not")
+		// Best-effort: restore credential so any lingering operator reconcile doesn't error
+		var cred corev1.Secret
+		if err := hubClient.Get(ctx, client.ObjectKey{Name: credSecretName1, Namespace: operatorNamespace}, &cred); err == nil {
+			cred.Data["kubeconfig"] = spoke1InternalKubeconfig
+			_ = hubClient.Update(ctx, &cred)
+		}
+
 		By("AfterAll: cleaning up HubConfig, SpokeCluster CRs, and credential Secrets")
 		_ = hubClient.Delete(ctx, &hubv1alpha1.SpokeCluster{ObjectMeta: metav1.ObjectMeta{Name: spoke1Name}})
 		_ = hubClient.Delete(ctx, &hubv1alpha1.SpokeCluster{ObjectMeta: metav1.ObjectMeta{Name: spoke2Name}})
 		_ = hubClient.Delete(ctx, &hubv1alpha1.HubConfig{ObjectMeta: metav1.ObjectMeta{Name: "cluster"}})
 		_ = hubClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: credSecretName1, Namespace: operatorNamespace}})
 		_ = hubClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: credSecretName2, Namespace: operatorNamespace}})
-		// Restart any stopped kind containers so cluster teardown works cleanly
-		if spoke1ContainerName != "" {
-			startSpokeContainer(spoke1ContainerName)
-		}
 	})
 
 	// -----------------------------------------------------------------------
@@ -184,21 +188,20 @@ var _ = Describe("Spoke lifecycle", Ordered, func() {
 	// Test 3: Spoke unreachable → Connected=False, other spoke unaffected
 	// -----------------------------------------------------------------------
 	It("detects spoke1 as unreachable while spoke2 remains Connected=True", func() {
-		if spoke1ContainerName == "" {
-			Skip("MC_SPOKE_CONTAINER_NAMES not set — skipping spoke-unreachable test (not running under kind)")
-		}
+		By("Simulating spoke1 unreachable: redirecting credential to non-routable IP")
+		// Replaces the credential Secret server URL with 192.0.2.1 (TEST-NET, RFC 5737)
+		// and annotates the SpokeCluster to trigger a reconcile. The reconciler updates
+		// the standing kubeconfig to the unreachable URL and fails connectivity → Connected=False.
+		makeCredentialUnreachable(ctx, spoke1Name, credSecretName1)
 
-		By("Stopping spoke1 kind container to simulate network unreachability")
-		stopSpokeContainer(spoke1ContainerName)
-
-		By("Waiting for spoke1 Connected=False (health handler detects within ~15s interval)")
+		By("Waiting for spoke1 Connected=False")
 		waitForConditionFalse(spoke1Name, "Connected")
 
 		By("Asserting spoke2 remains Connected=True")
 		var sc2 hubv1alpha1.SpokeCluster
 		Expect(hubClient.Get(ctx, client.ObjectKey{Name: spoke2Name}, &sc2)).To(Succeed())
 		Expect(conditionTrue(&sc2, "Connected")).To(BeTrue(),
-			"spoke2 Connected condition should still be True while spoke1 is down")
+			"spoke2 Connected condition should still be True while spoke1 credential is invalid")
 	})
 
 	// -----------------------------------------------------------------------
@@ -243,13 +246,11 @@ var _ = Describe("Spoke lifecycle", Ordered, func() {
 	// then re-creates spoke1 for Test 6.
 	// -----------------------------------------------------------------------
 	It("cleans up spoke1 (reachable) with no SpokeCleanupFailed event", func() {
-		// Re-enable spoke1 API server if it was blocked in Test 3 (kind only)
-		if spoke1ContainerName != "" {
-			By("Unblocking spoke1 API server (removing iptables DROP rule)")
-			startSpokeContainer(spoke1ContainerName)
-			By("Waiting for spoke1 Connected=True after unblock")
-			waitForCondition(spoke1Name, "Connected")
-		}
+		By("Restoring spoke1 credential (was redirected in Test 3)")
+		restoreCredential(ctx, spoke1Name, credSecretName1, spoke1InternalKubeconfig)
+
+		By("Waiting for spoke1 Connected=True after credential restore")
+		waitForCondition(spoke1Name, "Connected")
 
 		By("Deleting SpokeCluster for spoke1")
 		Expect(hubClient.Delete(ctx, &hubv1alpha1.SpokeCluster{
