@@ -83,6 +83,22 @@ lint: golangci-lint ## Run golangci-lint linter.
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes.
 	$(GOLANGCI_LINT) run --fix
 
+MC_E2E_ENV_FILE ?= /tmp/lightspeed-hub-mc-e2e-env
+# Use a dedicated image tag for e2e so the Makefile's exported IMG=:latest doesn't bleed in.
+# Override with MC_E2E_IMG=myregistry/myimage:tag make mc-e2e for a custom image.
+MC_E2E_IMG ?= lightspeed-hub-operator:e2e
+
+.PHONY: mc-e2e
+mc-e2e: build ## Run T1 multicluster e2e tests using kind (provisions hub + 2 spoke clusters).
+	IMG=$(MC_E2E_IMG) hack/mc-kind-up.sh $(MC_E2E_ENV_FILE)
+	@bash -c '. $(MC_E2E_ENV_FILE) && \
+		go test -v -tags mc_e2e -count=1 ./test/e2e/... -timeout 10m; \
+		EXIT=$$?; hack/mc-kind-down.sh; exit $$EXIT'
+
+.PHONY: mc-product-e2e
+mc-product-e2e: ## Run T2 multicluster e2e tests (expects MC_HUB_KUBECONFIG and MC_SPOKE_* env vars set by CI).
+	go test -v -tags mc_product_e2e -count=1 ./test/e2e/... -timeout 30m
+
 .PHONY: manifests
 manifests: controller-gen ## Regenerate CRD YAML and RBAC ClusterRole.
 	$(CONTROLLER_GEN) rbac:roleName=hub-operator-manager-role crd paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
