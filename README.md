@@ -10,15 +10,10 @@ The following must be installed on the hub cluster before deploying lightspeed-h
 
 - **lightspeed-operator** — provides `OLSConfig`, the lightspeed-service, and LLM provider configuration
 - **lightspeed-agentic-operator** — reconciles `AgenticRun` CRs targeting spoke clusters
-- **MCE** (optional) — required only when using `clusterRegistryMode: mce`
 
 ## Installation
 
 Deploy the operator via Helm into the `openshift-lightspeed` namespace, then create a `HubConfig` CR to configure how spoke clusters are registered.
-
-### Secret mode (manual kubeconfig)
-
-Spoke clusters are registered by creating `SpokeCluster` CRs that reference a kubeconfig Secret.
 
 ```yaml
 apiVersion: hub.openshift.io/v1alpha1
@@ -29,30 +24,11 @@ spec:
   clusterRegistryMode: secret
 ```
 
-### MCE mode (auto-discovery)
-
-Spoke clusters are auto-discovered from MCE `ManagedCluster` CRs matching a label selector.
-
-```yaml
-apiVersion: hub.openshift.io/v1alpha1
-kind: HubConfig
-metadata:
-  name: cluster
-spec:
-  clusterRegistryMode: mce
-  mce:
-    selector:
-      matchLabels:
-        lightspeed-enabled: "true"
-```
-
-When `mce.selector` is omitted, all `ManagedCluster` CRs are included.
+> **Note:** MCE-based auto-discovery (`clusterRegistryMode: mce`) will be supported in a future release.
 
 ## Registering Spoke Clusters
 
 `SpokeCluster` is a cluster-scoped CR. Each instance represents one spoke cluster.
-
-### With a stored kubeconfig (secret mode)
 
 Create a Secret containing the spoke's kubeconfig, then reference it:
 
@@ -67,20 +43,6 @@ spec:
     secret:
       name: spoke-east-kubeconfig
       namespace: openshift-lightspeed
-```
-
-### With MCE cluster-proxy (mce mode)
-
-```yaml
-apiVersion: hub.openshift.io/v1alpha1
-kind: SpokeCluster
-metadata:
-  name: spoke-east
-spec:
-  apiServer: https://api.spoke-east.example.com:6443
-  credentialSource:
-    mce:
-      managedClusterName: spoke-east
 ```
 
 Re-applying a `SpokeCluster` CR is safe — the reconciler is idempotent and converges without side effects.
