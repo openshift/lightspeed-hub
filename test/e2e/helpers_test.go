@@ -207,12 +207,14 @@ func corruptStandingKubeconfig(spokeName string) {
 }
 
 // waitForSpokeCleanupFailedEvent polls until a SpokeCleanupFailed warning Event exists
-// for the named spoke in the operator namespace.
+// for the named spoke. SpokeCluster is cluster-scoped so its Events land in the
+// "default" namespace regardless of where the operator runs.
 func waitForSpokeCleanupFailedEvent(spokeName string) {
-	GinkgoWriter.Printf("Waiting for SpokeCleanupFailed event for spoke %s\n", spokeName)
+	GinkgoWriter.Printf("Waiting for SpokeCleanupFailed event for spoke %s (in 'default' ns)\n", spokeName)
 	Eventually(func() bool {
 		var eventList corev1.EventList
-		if err := hubClient.List(ctx, &eventList, client.InNamespace(operatorNamespace)); err != nil {
+		// Events for cluster-scoped objects are created in the "default" namespace
+		if err := hubClient.List(ctx, &eventList, client.InNamespace("default")); err != nil {
 			return false
 		}
 		for _, e := range eventList.Items {
