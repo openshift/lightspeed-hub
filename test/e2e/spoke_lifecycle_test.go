@@ -23,6 +23,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -176,6 +177,19 @@ var _ = Describe("Spoke lifecycle", Ordered, func() {
 
 			By("T2: verifying spoke-alert-credential Secret on hub")
 			waitForSecret(fmt.Sprintf("spoke-alert-credential-%s", spoke1Name))
+
+			By("T2: verifying lightspeed-hub-alerts-adapter Deployment is available on hub")
+			Eventually(func() bool {
+				var dep appsv1.Deployment
+				if err := hubClient.Get(ctx, client.ObjectKey{
+					Name:      "lightspeed-hub-alerts-adapter",
+					Namespace: operatorNamespace,
+				}, &dep); err != nil {
+					return false
+				}
+				return dep.Status.AvailableReplicas >= 1
+			}, defaultEventuallyTimeout, defaultEventuallyInterval).Should(BeTrue(),
+				"lightspeed-hub-alerts-adapter Deployment never became available")
 		} else {
 			// T1 path: kind cluster — openshift-monitoring absent → ProvisionAdapter fails
 			By("T1: waiting for AdaptersReady=False with reason AdaptersFailed")
@@ -222,6 +236,15 @@ var _ = Describe("Spoke lifecycle", Ordered, func() {
 			Name:      fmt.Sprintf("spoke-kubeconfig-%s", spoke2Name),
 			Namespace: operatorNamespace,
 		})
+
+		if spokeHasAlertManager(spoke2Client) {
+			By("T2: verifying spoke-alert-credential Secret is GC'd (auto-GC via owner ref)")
+			var credSecret corev1.Secret
+			waitForNotFound(&credSecret, client.ObjectKey{
+				Name:      fmt.Sprintf("spoke-alert-credential-%s", spoke2Name),
+				Namespace: operatorNamespace,
+			})
+		}
 
 		By("Verifying spoke2-side managed namespace removed")
 		Eventually(func() bool {
@@ -274,6 +297,15 @@ var _ = Describe("Spoke lifecycle", Ordered, func() {
 			Name:      fmt.Sprintf("spoke-kubeconfig-%s", spoke1Name),
 			Namespace: operatorNamespace,
 		})
+
+		if spokeHasAlertManager(spoke1Client) {
+			By("T2: verifying spoke-alert-credential Secret is GC'd (auto-GC via owner ref)")
+			var credSecret corev1.Secret
+			waitForNotFound(&credSecret, client.ObjectKey{
+				Name:      fmt.Sprintf("spoke-alert-credential-%s", spoke1Name),
+				Namespace: operatorNamespace,
+			})
+		}
 
 		By("Asserting no SpokeCleanupFailed event for spoke1 in this clean deletion")
 		var eventList corev1.EventList
