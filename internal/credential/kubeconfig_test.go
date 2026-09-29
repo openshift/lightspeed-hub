@@ -220,7 +220,7 @@ func TestBuildStandingKubeconfig_InsecureSkipTLSVerify(t *testing.T) {
 		t.Fatalf("failed to parse generated kubeconfig: %v", err)
 	}
 
-	if !roundTripCfg.TLSClientConfig.Insecure {
+	if !roundTripCfg.Insecure {
 		t.Error("standing kubeconfig must have insecure-skip-tls-verify=true when admin kubeconfig has it; " +
 			"without it, connectivity checks fail with x509 certificate errors")
 	}
