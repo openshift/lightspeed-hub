@@ -26,7 +26,7 @@ COPY --from=builder /workspace/manager .
 RUN mkdir /licenses
 COPY LICENSE /licenses/.
 LABEL name="openshift-lightspeed/lightspeed-hub-rhel9-operator" \
-      cpe="cpe:/a:redhat:openshift_lightspeed:1::el9" \
+      cpe="cpe:/a:redhat:openshift_lightspeed:2::el9" \
       com.redhat.component="openshift-lightspeed" \
       io.k8s.display-name="OpenShift Lightspeed Hub Operator" \
       summary="OpenShift Lightspeed Hub Operator manages multicluster spoke lifecycle and fleet coordination." \
