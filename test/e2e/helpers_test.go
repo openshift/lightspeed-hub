@@ -41,8 +41,13 @@ const (
 )
 
 // waitForCondition polls until the named condition on the SpokeCluster reaches status=True.
-func waitForCondition(spokeName, condType string) {
-	GinkgoWriter.Printf("Waiting for SpokeCluster %s condition %s=True\n", spokeName, condType)
+// An optional timeout overrides defaultEventuallyTimeout (e.g. for health-handler-driven waits).
+func waitForCondition(spokeName, condType string, timeout ...time.Duration) {
+	to := defaultEventuallyTimeout
+	if len(timeout) > 0 {
+		to = timeout[0]
+	}
+	GinkgoWriter.Printf("Waiting for SpokeCluster %s condition %s=True (timeout %s)\n", spokeName, condType, to)
 	Eventually(func() bool {
 		var sc hubv1alpha1.SpokeCluster
 		if err := hubClient.Get(ctx, client.ObjectKey{Name: spokeName}, &sc); err != nil {
@@ -50,13 +55,18 @@ func waitForCondition(spokeName, condType string) {
 		}
 		c := meta.FindStatusCondition(sc.Status.Conditions, condType)
 		return c != nil && c.Status == metav1.ConditionTrue
-	}, defaultEventuallyTimeout, defaultEventuallyInterval).Should(BeTrue(),
+	}, to, defaultEventuallyInterval).Should(BeTrue(),
 		"SpokeCluster %s condition %s never reached True", spokeName, condType)
 }
 
 // waitForConditionFalse polls until the named condition on the SpokeCluster reaches status=False.
-func waitForConditionFalse(spokeName, condType string) {
-	GinkgoWriter.Printf("Waiting for SpokeCluster %s condition %s=False\n", spokeName, condType)
+// An optional timeout overrides defaultEventuallyTimeout (e.g. for health-handler-driven waits).
+func waitForConditionFalse(spokeName, condType string, timeout ...time.Duration) {
+	to := defaultEventuallyTimeout
+	if len(timeout) > 0 {
+		to = timeout[0]
+	}
+	GinkgoWriter.Printf("Waiting for SpokeCluster %s condition %s=False (timeout %s)\n", spokeName, condType, to)
 	Eventually(func() bool {
 		var sc hubv1alpha1.SpokeCluster
 		if err := hubClient.Get(ctx, client.ObjectKey{Name: spokeName}, &sc); err != nil {
@@ -64,7 +74,7 @@ func waitForConditionFalse(spokeName, condType string) {
 		}
 		c := meta.FindStatusCondition(sc.Status.Conditions, condType)
 		return c != nil && c.Status == metav1.ConditionFalse
-	}, defaultEventuallyTimeout, defaultEventuallyInterval).Should(BeTrue(),
+	}, to, defaultEventuallyInterval).Should(BeTrue(),
 		"SpokeCluster %s condition %s never reached False", spokeName, condType)
 }
 

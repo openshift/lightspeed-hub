@@ -20,6 +20,7 @@ package e2e_test
 
 import (
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -209,7 +210,9 @@ var _ = Describe("Spoke lifecycle", Ordered, func() {
 		makeCredentialUnreachable(ctx, spoke1Name, credSecretName1)
 
 		By("Waiting for spoke1 Connected=False")
-		waitForConditionFalse(spoke1Name, "Connected")
+		// The health handler fires at most every --health-check-interval (default 5m).
+		// Use 7m so T2 runs pass without patching the operator deployment.
+		waitForConditionFalse(spoke1Name, "Connected", 7*time.Minute)
 
 		By("Asserting spoke2 remains Connected=True")
 		var sc2 hubv1alpha1.SpokeCluster
