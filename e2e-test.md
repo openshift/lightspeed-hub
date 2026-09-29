@@ -1,4 +1,67 @@
-# End-to-End Testing on OpenShift
+# End-to-End Testing
+
+This file covers both the **automated** multicluster e2e suite (T1 kind / T2 OCP) and the legacy manual test.
+
+---
+
+## Automated Multicluster E2E Suite
+
+Six Ginkgo test cases covering the full spoke lifecycle (OLS-3952):
+registration, provisioning, unreachable detection, and three decommission variants.
+
+Build tags: `mc_e2e` (T1) and `mc_product_e2e` (T2).
+
+### T1 — kind (self-contained, no cloud credentials)
+
+Prerequisites: `kind`, `podman` or `docker`, `kubectl`, `python3`.
+
+```bash
+make mc-e2e
+```
+
+`hack/mc-kind-up.sh` creates three kind clusters (hub + 2 spokes), builds and loads the
+operator image, deploys it with `--health-check-interval=15s`, runs the suite, then tears
+everything down. To use a custom image:
+
+```bash
+MC_E2E_IMG=quay.io/youruser/lightspeed-hub-operator:tag make mc-e2e
+```
+
+### T2 — real OCP clusters
+
+The operator must already be deployed on the hub cluster. Set the three env vars and run:
+
+```bash
+export MC_HUB_KUBECONFIG=/path/to/hub.kubeconfig
+export MC_SPOKE_KUBECONFIGS=/path/to/spoke1.kubeconfig,/path/to/spoke2.kubeconfig
+export MC_SPOKE_INTERNAL_KUBECONFIGS=/path/to/spoke1.kubeconfig,/path/to/spoke2.kubeconfig
+
+make mc-product-e2e
+```
+
+`MC_SPOKE_INTERNAL_KUBECONFIGS` is the set of kubeconfigs the **operator pod** uses to reach
+spoke API servers. On OCP this is the same as the external kubeconfig. For kind T1 the
+up-script generates container-IP-based kubeconfigs automatically.
+
+For a single-cluster self-referencing test, point all three env vars at the same kubeconfig.
+
+### Test cases
+
+| # | Test | T1 | T2 |
+|---|---|---|---|
+| 1 | Registration → `Connected=True`, standing kubeconfig, spoke-side namespace/SA/CRBs | ✓ | ✓ |
+| 2 | `Provisioned=True` + `AdaptersReady` (T1: `False/AdaptersFailed`; T2: `True` + adapter Deployment available) | ✓ | ✓ |
+| 3 | Simulate unreachable → `Connected=False`, other spoke unaffected | ✓ | ✓ |
+| 4 | Delete reachable spoke → spoke-side cleanup, credential Secret GC'd, no `SpokeCleanupFailed` event | ✓ | ✓ |
+| 5 | Delete reachable spoke (OLS-3948 AC1) → spoke-side namespace gone | ✓ | ✓ |
+| 6 | Corrupted kubeconfig → `SpokeCleanupFailed` event in `default` ns, finalizer released (OLS-3948 AC2) | ✓ | ✓ |
+
+> **Note:** `SpokeCleanupFailed` events land in the `default` namespace because `SpokeCluster`
+> is cluster-scoped. Check with `kubectl get events -n default --field-selector reason=SpokeCleanupFailed`.
+
+---
+
+## Legacy Manual E2E Test
 
 Manual e2e test for the hub operator on a live OCP cluster. Uses a single cluster acting as both hub and spoke.
 

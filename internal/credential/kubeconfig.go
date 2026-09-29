@@ -68,6 +68,7 @@ func buildKubeconfigAPI(cfg *rest.Config, apiServer string) clientcmdapi.Config 
 	cluster := clientcmdapi.NewCluster()
 	cluster.Server = apiServer
 	cluster.CertificateAuthorityData = cfg.CAData
+	cluster.InsecureSkipTLSVerify = cfg.Insecure
 	if cluster.Server == "" {
 		cluster.Server = cfg.Host
 	}
