@@ -29,6 +29,24 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+func spokeClusterRoleBinding(name, role string) *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name:     role,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      ServiceAccountName,
+				Namespace: ManagedNamespace,
+			},
+		},
+	}
+}
+
 func TestProvision(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
@@ -58,36 +76,9 @@ func TestProvision(t *testing.T) {
 						Namespace: ManagedNamespace,
 					},
 				},
-				&rbacv1.ClusterRoleBinding{
-					ObjectMeta: metav1.ObjectMeta{Name: ClusterRoleBindingClusterReader},
-					RoleRef: rbacv1.RoleRef{
-						APIGroup: rbacv1.GroupName,
-						Kind:     "ClusterRole",
-						Name:     "cluster-reader",
-					},
-					Subjects: []rbacv1.Subject{
-						{
-							Kind:      "ServiceAccount",
-							Name:      ServiceAccountName,
-							Namespace: ManagedNamespace,
-						},
-					},
-				},
-				&rbacv1.ClusterRoleBinding{
-					ObjectMeta: metav1.ObjectMeta{Name: ClusterRoleBindingMonitoringView},
-					RoleRef: rbacv1.RoleRef{
-						APIGroup: rbacv1.GroupName,
-						Kind:     "ClusterRole",
-						Name:     "cluster-monitoring-view",
-					},
-					Subjects: []rbacv1.Subject{
-						{
-							Kind:      "ServiceAccount",
-							Name:      ServiceAccountName,
-							Namespace: ManagedNamespace,
-						},
-					},
-				},
+				spokeClusterRoleBinding(ClusterRoleBindingClusterReader, "cluster-reader"),
+				spokeClusterRoleBinding(ClusterRoleBindingMonitoringView, "cluster-monitoring-view"),
+				spokeClusterRoleBinding(ClusterRoleBindingMonitoringRulesView, "monitoring-rules-view"),
 			},
 			wantErr:           false,
 			validateResources: true,
@@ -98,21 +89,7 @@ func TestProvision(t *testing.T) {
 				&corev1.Namespace{
 					ObjectMeta: metav1.ObjectMeta{Name: ManagedNamespace},
 				},
-				&rbacv1.ClusterRoleBinding{
-					ObjectMeta: metav1.ObjectMeta{Name: ClusterRoleBindingClusterReader},
-					RoleRef: rbacv1.RoleRef{
-						APIGroup: rbacv1.GroupName,
-						Kind:     "ClusterRole",
-						Name:     "cluster-reader",
-					},
-					Subjects: []rbacv1.Subject{
-						{
-							Kind:      "ServiceAccount",
-							Name:      ServiceAccountName,
-							Namespace: ManagedNamespace,
-						},
-					},
-				},
+				spokeClusterRoleBinding(ClusterRoleBindingClusterReader, "cluster-reader"),
 			},
 			wantErr:           false,
 			validateResources: true,
@@ -163,6 +140,14 @@ func TestProvision(t *testing.T) {
 				}, crbMonitoring); err != nil {
 					t.Errorf("ClusterRoleBinding %s not found: %v", ClusterRoleBindingMonitoringView, err)
 				}
+
+				// Verify ClusterRoleBinding monitoring-rules-view
+				crbMonitoringRules := &rbacv1.ClusterRoleBinding{}
+				if err := c.Get(context.Background(), client.ObjectKey{
+					Name: ClusterRoleBindingMonitoringRulesView,
+				}, crbMonitoringRules); err != nil {
+					t.Errorf("ClusterRoleBinding %s not found: %v", ClusterRoleBindingMonitoringRulesView, err)
+				}
 			}
 		})
 	}
@@ -190,36 +175,9 @@ func TestDeprovision(t *testing.T) {
 						Namespace: ManagedNamespace,
 					},
 				},
-				&rbacv1.ClusterRoleBinding{
-					ObjectMeta: metav1.ObjectMeta{Name: ClusterRoleBindingClusterReader},
-					RoleRef: rbacv1.RoleRef{
-						APIGroup: rbacv1.GroupName,
-						Kind:     "ClusterRole",
-						Name:     "cluster-reader",
-					},
-					Subjects: []rbacv1.Subject{
-						{
-							Kind:      "ServiceAccount",
-							Name:      ServiceAccountName,
-							Namespace: ManagedNamespace,
-						},
-					},
-				},
-				&rbacv1.ClusterRoleBinding{
-					ObjectMeta: metav1.ObjectMeta{Name: ClusterRoleBindingMonitoringView},
-					RoleRef: rbacv1.RoleRef{
-						APIGroup: rbacv1.GroupName,
-						Kind:     "ClusterRole",
-						Name:     "cluster-monitoring-view",
-					},
-					Subjects: []rbacv1.Subject{
-						{
-							Kind:      "ServiceAccount",
-							Name:      ServiceAccountName,
-							Namespace: ManagedNamespace,
-						},
-					},
-				},
+				spokeClusterRoleBinding(ClusterRoleBindingClusterReader, "cluster-reader"),
+				spokeClusterRoleBinding(ClusterRoleBindingMonitoringView, "cluster-monitoring-view"),
+				spokeClusterRoleBinding(ClusterRoleBindingMonitoringRulesView, "monitoring-rules-view"),
 			},
 			validateDeleted: true,
 		},
@@ -234,21 +192,8 @@ func TestDeprovision(t *testing.T) {
 				&corev1.Namespace{
 					ObjectMeta: metav1.ObjectMeta{Name: ManagedNamespace},
 				},
-				&rbacv1.ClusterRoleBinding{
-					ObjectMeta: metav1.ObjectMeta{Name: ClusterRoleBindingMonitoringView},
-					RoleRef: rbacv1.RoleRef{
-						APIGroup: rbacv1.GroupName,
-						Kind:     "ClusterRole",
-						Name:     "cluster-monitoring-view",
-					},
-					Subjects: []rbacv1.Subject{
-						{
-							Kind:      "ServiceAccount",
-							Name:      ServiceAccountName,
-							Namespace: ManagedNamespace,
-						},
-					},
-				},
+				spokeClusterRoleBinding(ClusterRoleBindingMonitoringView, "cluster-monitoring-view"),
+				spokeClusterRoleBinding(ClusterRoleBindingMonitoringRulesView, "monitoring-rules-view"),
 			},
 			validateDeleted: false,
 		},
@@ -298,6 +243,15 @@ func TestDeprovision(t *testing.T) {
 				}, crbMonitoring)
 				if err == nil {
 					t.Errorf("ClusterRoleBinding %s still exists after Deprovision", ClusterRoleBindingMonitoringView)
+				}
+
+				// Verify ClusterRoleBinding monitoring-rules-view is deleted
+				crbMonitoringRules := &rbacv1.ClusterRoleBinding{}
+				err = c.Get(context.Background(), client.ObjectKey{
+					Name: ClusterRoleBindingMonitoringRulesView,
+				}, crbMonitoringRules)
+				if err == nil {
+					t.Errorf("ClusterRoleBinding %s still exists after Deprovision", ClusterRoleBindingMonitoringRulesView)
 				}
 			}
 		})

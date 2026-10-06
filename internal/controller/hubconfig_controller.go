@@ -69,6 +69,7 @@ func (r *HubConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !hc.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&hc, hubConfigAdapterFinalizer) {
 			logger.Info("HubConfig deleting, tearing down adapter stack")
+			teardownSandboxRBAC(ctx, r.client, r.operatorNamespace)
 			if err := teardownAdapterStack(ctx, r.client, r.operatorNamespace); err != nil {
 				return ctrl.Result{}, fmt.Errorf("tearing down adapter stack: %w", err)
 			}
@@ -85,6 +86,10 @@ func (r *HubConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if err := r.client.Update(ctx, &hc); err != nil {
 			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
 		}
+	}
+
+	if err := ensureSandboxRBAC(ctx, r.client, r.operatorNamespace); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring sandbox RBAC: %w", err)
 	}
 
 	if err := ensureAdapterStack(ctx, r.client, r.operatorNamespace, r.adapterImage); err != nil {
