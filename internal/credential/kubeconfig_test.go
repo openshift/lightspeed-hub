@@ -87,7 +87,7 @@ func TestBuildStandingKubeconfig_TokenAuth(t *testing.T) {
 	sc := spokeCluster()
 	operatorNS := "openshift-lightspeed"
 
-	secret, err := BuildStandingKubeconfig(cfg, sc, operatorNS, kubeconfigTestScheme())
+	secret, err := BuildStandingKubeconfig(cfg, sc, sc.Spec.APIServer, operatorNS, kubeconfigTestScheme())
 	if err != nil {
 		t.Fatalf("BuildStandingKubeconfig() error = %v", err)
 	}
@@ -162,7 +162,7 @@ func TestBuildStandingKubeconfig_ClientCertAuth(t *testing.T) {
 	sc := spokeCluster()
 	operatorNS := "openshift-lightspeed"
 
-	secret, err := BuildStandingKubeconfig(cfg, sc, operatorNS, kubeconfigTestScheme())
+	secret, err := BuildStandingKubeconfig(cfg, sc, sc.Spec.APIServer, operatorNS, kubeconfigTestScheme())
 	if err != nil {
 		t.Fatalf("BuildStandingKubeconfig() error = %v", err)
 	}
@@ -206,7 +206,7 @@ func TestBuildStandingKubeconfig_InsecureSkipTLSVerify(t *testing.T) {
 	sc.Spec.APIServer = "https://10.89.0.15:6443"
 	operatorNS := "openshift-lightspeed"
 
-	secret, err := BuildStandingKubeconfig(cfg, sc, operatorNS, kubeconfigTestScheme())
+	secret, err := BuildStandingKubeconfig(cfg, sc, sc.Spec.APIServer, operatorNS, kubeconfigTestScheme())
 	if err != nil {
 		t.Fatalf("BuildStandingKubeconfig() error = %v", err)
 	}
@@ -235,12 +235,51 @@ func TestBuildStandingKubeconfig_OwnerRefError(t *testing.T) {
 	sc := spokeCluster()
 	// Empty scheme — SpokeCluster not registered, SetControllerReference fails
 	emptyScheme := runtime.NewScheme()
-	_, err := BuildStandingKubeconfig(cfg, sc, "openshift-lightspeed", emptyScheme)
+	_, err := BuildStandingKubeconfig(cfg, sc, "", "openshift-lightspeed", emptyScheme)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if !errors.Is(err, ErrSettingOwnerRef) {
 		t.Errorf("expected errors.Is(err, ErrSettingOwnerRef), got: %v", err)
+	}
+}
+
+func TestBuildStandingKubeconfig_MCEProxyEndpoint(t *testing.T) {
+	// MCE mode: the rest.Config.Host is the proxy endpoint URL.
+	// With empty serverOverride, the standing kubeconfig uses cfg.Host.
+	cfg := &rest.Config{
+		Host:        "https://cluster-proxy-addon-user.multicluster-engine.svc:9092/spoke-1",
+		BearerToken: "hub-sa-token",
+		TLSClientConfig: rest.TLSClientConfig{
+			CAData: []byte("proxy-ca-data"),
+		},
+	}
+
+	sc := spokeCluster()
+	sc.Spec.APIServer = "https://api.spoke-1.example.com:6443"
+	operatorNS := "openshift-lightspeed"
+
+	// Empty serverOverride = MCE mode
+	secret, err := BuildStandingKubeconfig(cfg, sc, "", operatorNS, kubeconfigTestScheme())
+	if err != nil {
+		t.Fatalf("BuildStandingKubeconfig() error = %v", err)
+	}
+
+	kubeconfigBytes := secret.Data[KubeconfigKey]
+	roundTripCfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfigBytes)
+	if err != nil {
+		t.Fatalf("failed to parse generated kubeconfig: %v", err)
+	}
+
+	// Server should be the proxy endpoint, not the spoke's real API
+	if roundTripCfg.Host != cfg.Host {
+		t.Errorf("Host = %q, want proxy endpoint %q", roundTripCfg.Host, cfg.Host)
+	}
+	if roundTripCfg.BearerToken != cfg.BearerToken {
+		t.Errorf("BearerToken = %q, want %q", roundTripCfg.BearerToken, cfg.BearerToken)
+	}
+	if string(roundTripCfg.CAData) != string(cfg.CAData) {
+		t.Error("CAData mismatch")
 	}
 }
 
@@ -258,7 +297,7 @@ func TestBuildStandingKubeconfig_FallbackToHost(t *testing.T) {
 	sc.Spec.APIServer = "" // Empty APIServer to test fallback
 	operatorNS := "openshift-lightspeed"
 
-	secret, err := BuildStandingKubeconfig(cfg, sc, operatorNS, kubeconfigTestScheme())
+	secret, err := BuildStandingKubeconfig(cfg, sc, "", operatorNS, kubeconfigTestScheme())
 	if err != nil {
 		t.Fatalf("BuildStandingKubeconfig() error = %v", err)
 	}

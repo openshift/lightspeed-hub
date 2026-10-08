@@ -63,7 +63,6 @@ const (
 
 	reasonManaged                  = "Managed"
 	reasonHubConfigMissing         = "HubConfigMissing"
-	reasonUnsupportedMode          = "UnsupportedMode"
 	reasonCredentialSourceMismatch = "CredentialSourceMismatch"
 	reasonConnectionSucceeded      = "ConnectionSucceeded"
 	reasonConnectionFailed         = "ConnectionFailed"
@@ -143,6 +142,8 @@ func defaultRequestSAToken(ctx context.Context, cfg *rest.Config, saName, namesp
 // +kubebuilder:rbac:groups=hub.openshift.io,resources=spokeclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=hub.openshift.io,resources=spokeclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups="",resources=configmaps;serviceaccounts,verbs=create;delete;get;list;watch
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -179,11 +180,6 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	if !hubConfig.DeletionTimestamp.IsZero() {
 		return r.unmanageSpoke(ctx, &sc, reasonHubConfigMissing, "HubConfig is being deleted")
-	}
-
-	if hubConfig.Spec.ClusterRegistryMode != hubv1alpha1.ClusterRegistryModeSecret {
-		return r.unmanageSpoke(ctx, &sc, reasonUnsupportedMode,
-			fmt.Sprintf("clusterRegistryMode %q is not yet supported", hubConfig.Spec.ClusterRegistryMode))
 	}
 
 	if !r.credentialSourceMatchesMode(&sc, &hubConfig) {
@@ -270,7 +266,14 @@ func (r *SpokeClusterReconciler) reconcileDelete(ctx context.Context, sc *hubv1a
 func (r *SpokeClusterReconciler) ensureStandingKubeconfig(ctx context.Context, cfg *rest.Config, sc *hubv1alpha1.SpokeCluster) error {
 	log := log.FromContext(ctx)
 
-	standingSecret, err := credential.BuildStandingKubeconfig(cfg, sc, r.operatorNamespace, r.scheme)
+	// For secret mode, the standing kubeconfig server is the spoke's API server.
+	// For MCE mode, the proxy endpoint is already in cfg.Host, so pass empty
+	// to let buildKubeconfigAPI use cfg.Host directly.
+	serverOverride := sc.Spec.APIServer
+	if sc.Spec.CredentialSource.MCE != nil {
+		serverOverride = ""
+	}
+	standingSecret, err := credential.BuildStandingKubeconfig(cfg, sc, serverOverride, r.operatorNamespace, r.scheme)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrBuildingStandingKubeconfig, err)
 	}
