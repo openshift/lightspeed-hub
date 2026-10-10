@@ -98,7 +98,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	credSource := credential.NewSecretCredentialSource(mgr.GetClient())
+	secretSource := credential.NewSecretCredentialSource(mgr.GetClient())
+	mceSource := credential.NewMCECredentialSource(mgr.GetClient(), namespace)
+	credSource := credential.NewDispatchingCredentialSource(secretSource, mceSource)
 	if err := controller.NewSpokeClusterReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
@@ -106,6 +108,14 @@ func main() {
 		namespace,
 	).SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to create controller", "controller", "SpokeCluster")
+		os.Exit(1)
+	}
+
+	if err := controller.NewMCEDiscoveryReconciler(
+		mgr.GetClient(),
+		mgr.GetAPIReader(),
+	).SetupWithManager(mgr); err != nil {
+		log.Error(err, "unable to create controller", "controller", "MCEDiscovery")
 		os.Exit(1)
 	}
 
