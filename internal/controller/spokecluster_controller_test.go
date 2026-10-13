@@ -49,7 +49,6 @@ const (
 	conditionTypeAdaptersReady = "AdaptersReady"
 
 	reasonHubConfigMissing         = "HubConfigMissing"
-	reasonUnsupportedMode          = "UnsupportedMode"
 	reasonCredentialSourceMismatch = "CredentialSourceMismatch"
 	reasonConnectionSucceeded      = "ConnectionSucceeded"
 	reasonConnectionFailed         = "ConnectionFailed"
@@ -703,7 +702,8 @@ current-context: spoke
 			Expect(readyCond.Reason).To(Equal(reasonHubConfigMissing))
 		})
 
-		It("should set Ready=False when HubConfig mode is unsupported", func() {
+		It("should set Ready=False when credential source mismatches HubConfig mode", func() {
+			// SpokeCluster has secret credentials but HubConfig is in MCE mode
 			sc := newSpokeClusterWithFinalizer("test-spoke")
 
 			mceHubConfig := &hubv1alpha1.HubConfig{
@@ -732,7 +732,7 @@ current-context: spoke
 			readyCond := meta.FindStatusCondition(updated.Status.Conditions, conditionTypeReady)
 			Expect(readyCond).NotTo(BeNil())
 			Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
-			Expect(readyCond.Reason).To(Equal(reasonUnsupportedMode))
+			Expect(readyCond.Reason).To(Equal(reasonCredentialSourceMismatch))
 		})
 
 		It("should clean up resources when HubConfig is removed", func() {

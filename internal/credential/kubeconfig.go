@@ -39,8 +39,11 @@ func StandingKubeconfigName(spokeName string) string {
 	return StandingKubeconfigPrefix + spokeName
 }
 
-func BuildStandingKubeconfig(cfg *rest.Config, sc *hubv1alpha1.SpokeCluster, operatorNamespace string, scheme *runtime.Scheme) (*corev1.Secret, error) {
-	kubeconfig := buildKubeconfigAPI(cfg, sc.Spec.APIServer)
+// BuildStandingKubeconfig creates the standing kubeconfig Secret for a spoke.
+// For secret mode, serverOverride is sc.Spec.APIServer (the real spoke API).
+// For MCE mode, serverOverride is "" so cfg.Host (the proxy endpoint) is used.
+func BuildStandingKubeconfig(cfg *rest.Config, sc *hubv1alpha1.SpokeCluster, serverOverride, operatorNamespace string, scheme *runtime.Scheme) (*corev1.Secret, error) {
+	kubeconfig := buildKubeconfigAPI(cfg, serverOverride)
 
 	kubeconfigBytes, err := clientcmd.Write(kubeconfig)
 	if err != nil {
