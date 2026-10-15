@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"time"
 
+	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -31,9 +32,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -49,6 +52,9 @@ import (
 const (
 	spokeClusterFinalizer = "hub.openshift.io/spoke-cleanup"
 	spokeDialTimeout      = 10 * time.Second
+
+	adapterTokenLifetime         = 24 * time.Hour
+	adapterTokenRefreshThreshold = 0.2 // rotate when <20% lifetime remains
 
 	conditionTypeReady         = "Ready"
 	conditionTypeConnected     = "Connected"
@@ -78,6 +84,7 @@ type SpokeClusterReconciler struct {
 	NewSpokeClient          func(cfg *rest.Config) (client.Client, error)
 	CheckConnectivity       func(cfg *rest.Config) error
 	DiscoverAlertmanagerURL func(ctx context.Context, spokeClient client.Client) (string, error)
+	RequestSAToken          func(ctx context.Context, cfg *rest.Config, saName, namespace string) (token string, expiry time.Time, err error)
 }
 
 func NewSpokeClusterReconciler(hubClient client.Client, scheme *runtime.Scheme, credSource credential.CredentialSource, operatorNamespace string) *SpokeClusterReconciler {
@@ -89,6 +96,7 @@ func NewSpokeClusterReconciler(hubClient client.Client, scheme *runtime.Scheme, 
 		NewSpokeClient:          defaultNewSpokeClient,
 		CheckConnectivity:       defaultCheckConnectivity,
 		DiscoverAlertmanagerURL: defaultDiscoverAlertmanagerURL,
+		RequestSAToken:          defaultRequestSAToken,
 	}
 }
 
@@ -112,6 +120,22 @@ func defaultCheckConnectivity(cfg *rest.Config) error {
 		return fmt.Errorf("%w: %w", ErrCheckingServerVersion, err)
 	}
 	return nil
+}
+
+func defaultRequestSAToken(ctx context.Context, cfg *rest.Config, saName, namespace string) (string, time.Time, error) {
+	clientset, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("creating kubernetes client: %w", err)
+	}
+	tr, err := clientset.CoreV1().ServiceAccounts(namespace).CreateToken(ctx, saName, &authv1.TokenRequest{
+		Spec: authv1.TokenRequestSpec{
+			ExpirationSeconds: ptr.To(int64(adapterTokenLifetime.Seconds())),
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return tr.Status.Token, tr.Status.ExpirationTimestamp.Time, nil
 }
 
 // +kubebuilder:rbac:groups=hub.openshift.io,resources=hubconfigs,verbs=get;list;watch
@@ -207,7 +231,7 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	r.setCondition(&sc, conditionTypeProvisioned, metav1.ConditionTrue, reasonProvisioningSucceeded, "spoke-side resources provisioned")
 
 	// Adapter orchestration: provision spoke-side adapter resources, create hub-side credential Secret
-	if err := r.reconcileAdapters(ctx, &sc, spokeClient); err != nil {
+	if err := r.reconcileAdapters(ctx, &sc, spokeClient, standingCfg); err != nil {
 		log.Error(err, "Failed to provision adapters", "spoke", sc.Name)
 		return r.failWithCondition(ctx, &sc, conditionTypeAdaptersReady, reasonAdaptersFailed, err)
 	}
@@ -451,21 +475,21 @@ func (r *SpokeClusterReconciler) setCondition(sc *hubv1alpha1.SpokeCluster, cond
 	})
 }
 
-// reconcileAdapters provisions spoke-side adapter resources, reads back the SA token,
-// discovers the AlertManager Route URL and ingress CA, creates the hub-side credential
-// Secret, and labels the SpokeCluster CR for adapter discovery.
-func (r *SpokeClusterReconciler) reconcileAdapters(ctx context.Context, sc *hubv1alpha1.SpokeCluster, spokeClient client.Client) error {
+// reconcileAdapters provisions spoke-side adapter resources, obtains a time-bound SA
+// token (rotating if near expiry), discovers the AlertManager Route URL and ingress CA,
+// creates the hub-side credential Secret, and labels the SpokeCluster CR.
+func (r *SpokeClusterReconciler) reconcileAdapters(ctx context.Context, sc *hubv1alpha1.SpokeCluster, spokeClient client.Client, standingCfg *rest.Config) error {
 	log := log.FromContext(ctx)
 
-	// Provision spoke-side adapter resources (SA, RoleBinding, token Secret)
+	// Provision spoke-side adapter resources (SA and RoleBinding)
 	if err := provisioner.ProvisionAdapter(ctx, spokeClient); err != nil {
 		return fmt.Errorf("%w: %w", ErrProvisioningAdapterResources, err)
 	}
 
-	// Read the token from the spoke-side token Secret
-	token, err := r.readAdapterToken(ctx, spokeClient)
+	// Obtain a token — reuse the existing one if fresh, otherwise request a new one
+	token, tokenExpiry, err := r.resolveAdapterToken(ctx, sc, standingCfg)
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrReadingAdapterToken, err)
+		return fmt.Errorf("%w: %w", ErrRequestingAdapterToken, err)
 	}
 
 	// Discover the AlertManager Route URL from the spoke
@@ -477,8 +501,10 @@ func (r *SpokeClusterReconciler) reconcileAdapters(ctx context.Context, sc *hubv
 	// Read the ingress CA from the spoke for Route TLS verification
 	caBundle := r.readIngressCA(ctx, spokeClient)
 
+	tokenExpiryStr := tokenExpiry.UTC().Format(time.RFC3339)
+
 	// Create or update the hub-side adapter credential Secret
-	if err := r.ensureAdapterCredentialSecret(ctx, sc, alertmanagerURL, token, caBundle); err != nil {
+	if err := r.ensureAdapterCredentialSecret(ctx, sc, alertmanagerURL, token, tokenExpiryStr, caBundle); err != nil {
 		return fmt.Errorf("%w: %w", ErrEnsuringAdapterCredential, err)
 	}
 
@@ -497,20 +523,48 @@ func (r *SpokeClusterReconciler) reconcileAdapters(ctx context.Context, sc *hubv
 	return nil
 }
 
-func (r *SpokeClusterReconciler) readAdapterToken(ctx context.Context, spokeClient client.Client) (string, error) {
-	var tokenSecret corev1.Secret
+// resolveAdapterToken returns the existing token if it has more than 20% of its
+// lifetime remaining, otherwise requests a fresh 24h token via the TokenRequest API.
+func (r *SpokeClusterReconciler) resolveAdapterToken(ctx context.Context, sc *hubv1alpha1.SpokeCluster, standingCfg *rest.Config) (string, time.Time, error) {
+	rotationBuffer := time.Duration(float64(adapterTokenLifetime) * adapterTokenRefreshThreshold)
+
+	existingToken, existingExpiry, hasExisting := r.readExistingTokenAndExpiry(ctx, sc)
+	if hasExisting && time.Until(existingExpiry) > rotationBuffer {
+		return existingToken, existingExpiry, nil
+	}
+
+	token, expiry, err := r.RequestSAToken(ctx, standingCfg, provisioner.AlertAdapterServiceAccount, provisioner.ManagedNamespace)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return token, expiry, nil
+}
+
+// readExistingTokenAndExpiry reads the token and expiry from the existing hub-side
+// adapter credential Secret. Returns (token, expiry, true) when both are present and
+// parseable, or ("", zero, false) otherwise.
+func (r *SpokeClusterReconciler) readExistingTokenAndExpiry(ctx context.Context, sc *hubv1alpha1.SpokeCluster) (string, time.Time, bool) {
+	var existing corev1.Secret
 	secretKey := client.ObjectKey{
-		Name:      provisioner.AlertAdapterTokenSecret,
-		Namespace: provisioner.ManagedNamespace,
+		Name:      credential.AdapterCredentialName(sc.Name),
+		Namespace: r.operatorNamespace,
 	}
-	if err := spokeClient.Get(ctx, secretKey, &tokenSecret); err != nil {
-		return "", fmt.Errorf("%w: %w", ErrGettingTokenSecret, err)
+	if err := r.client.Get(ctx, secretKey, &existing); err != nil {
+		return "", time.Time{}, false
 	}
-	token, ok := tokenSecret.Data["token"]
-	if !ok || len(token) == 0 {
-		return "", fmt.Errorf("%w %s (token controller may not have populated it yet)", ErrMissingTokenKey, secretKey.Name)
+	tokenBytes := existing.Data[credential.TokenKey]
+	if len(tokenBytes) == 0 {
+		return "", time.Time{}, false
 	}
-	return string(token), nil
+	expiryBytes := existing.Data[credential.TokenExpiryKey]
+	if len(expiryBytes) == 0 {
+		return "", time.Time{}, false
+	}
+	expiry, err := time.Parse(time.RFC3339, string(expiryBytes))
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	return string(tokenBytes), expiry, true
 }
 
 // readIngressCA reads the ingress CA bundle from the spoke's default-ingress-cert
@@ -536,10 +590,10 @@ func (r *SpokeClusterReconciler) readIngressCA(ctx context.Context, spokeClient 
 
 // ensureAdapterCredentialSecret creates or updates the hub-side adapter credential
 // Secret. Skips the update if the data and owner references are unchanged.
-func (r *SpokeClusterReconciler) ensureAdapterCredentialSecret(ctx context.Context, sc *hubv1alpha1.SpokeCluster, alertmanagerURL, token, caBundle string) error {
+func (r *SpokeClusterReconciler) ensureAdapterCredentialSecret(ctx context.Context, sc *hubv1alpha1.SpokeCluster, alertmanagerURL, token, tokenExpiry, caBundle string) error {
 	log := log.FromContext(ctx)
 
-	adapterSecret, err := credential.BuildAdapterCredentialSecret(sc, alertmanagerURL, token, caBundle, r.operatorNamespace, r.scheme)
+	adapterSecret, err := credential.BuildAdapterCredentialSecret(sc, alertmanagerURL, token, tokenExpiry, caBundle, r.operatorNamespace, r.scheme)
 	if err != nil {
 		return err
 	}
@@ -560,6 +614,7 @@ func (r *SpokeClusterReconciler) ensureAdapterCredentialSecret(ctx context.Conte
 	}
 	dataChanged := !bytes.Equal(existing.Data[credential.AlertmanagerURLKey], adapterSecret.Data[credential.AlertmanagerURLKey]) ||
 		!bytes.Equal(existing.Data[credential.TokenKey], adapterSecret.Data[credential.TokenKey]) ||
+		!bytes.Equal(existing.Data[credential.TokenExpiryKey], adapterSecret.Data[credential.TokenExpiryKey]) ||
 		!bytes.Equal(existing.Data[credential.CABundleKey], adapterSecret.Data[credential.CABundleKey])
 	ownerChanged := !ownerRefsEqual(existing.OwnerReferences, adapterSecret.OwnerReferences)
 	if dataChanged || ownerChanged {

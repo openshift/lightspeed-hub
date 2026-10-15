@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	hubv1alpha1 "github.com/openshift/lightspeed-hub/api/v1alpha1"
+	"github.com/openshift/lightspeed-hub/internal/credential"
 )
 
 const (
@@ -200,7 +201,73 @@ var _ = Describe("Spoke lifecycle", Ordered, func() {
 	})
 
 	// -----------------------------------------------------------------------
-	// Test 3: Spoke unreachable → Connected=False, other spoke unaffected
+	// Test 3: Token rotation — near-expiry triggers new TokenRequest (T2 only)
+	// -----------------------------------------------------------------------
+	It("rotates the adapter SA token when the existing token is near expiry (T2 only)", func() {
+		if !spokeHasAlertManager(spoke1Client) {
+			Skip("token rotation test requires OpenShift monitoring (T2 only)")
+		}
+
+		By("Waiting for spoke1 AdaptersReady=True (prerequisite)")
+		waitForCondition(spoke1Name, "AdaptersReady")
+
+		credKey := client.ObjectKey{
+			Name:      fmt.Sprintf("spoke-alert-credential-%s", spoke1Name),
+			Namespace: operatorNamespace,
+		}
+		waitForSecret(fmt.Sprintf("spoke-alert-credential-%s", spoke1Name))
+
+		By("Reading the current adapter credential Secret")
+		var adapterCred corev1.Secret
+		Expect(hubClient.Get(ctx, credKey, &adapterCred)).To(Succeed())
+
+		originalToken := string(adapterCred.Data[credential.TokenKey])
+		Expect(originalToken).NotTo(BeEmpty(), "adapter credential Secret should contain a token")
+
+		originalExpiry := string(adapterCred.Data[credential.TokenExpiryKey])
+		Expect(originalExpiry).NotTo(BeEmpty(), "adapter credential Secret should contain token-expiry")
+		GinkgoWriter.Printf("Original expiry: %s\n", originalExpiry)
+
+		By("Patching token-expiry to simulate a near-expiry token (1h remaining)")
+		nearExpiry := time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339)
+		adapterCred.Data[credential.TokenExpiryKey] = []byte(nearExpiry)
+		Expect(hubClient.Update(ctx, &adapterCred)).To(Succeed())
+
+		By("Triggering reconcile via SpokeCluster annotation")
+		touchSpokeCluster(ctx, spoke1Name, "token-rotation-test")
+
+		By("Waiting for the token to be rotated")
+		Eventually(func() bool {
+			var updated corev1.Secret
+			if err := hubClient.Get(ctx, credKey, &updated); err != nil {
+				return false
+			}
+			newToken := string(updated.Data[credential.TokenKey])
+			return newToken != "" && newToken != originalToken
+		}, defaultEventuallyTimeout, defaultEventuallyInterval).Should(BeTrue(),
+			"adapter token was not rotated after near-expiry patch")
+
+		By("Verifying new token-expiry is approximately 24h from now")
+		var rotated corev1.Secret
+		Expect(hubClient.Get(ctx, credKey, &rotated)).To(Succeed())
+		newExpiry, err := time.Parse(time.RFC3339, string(rotated.Data[credential.TokenExpiryKey]))
+		Expect(err).NotTo(HaveOccurred(), "new token-expiry should be a valid RFC3339 timestamp")
+		GinkgoWriter.Printf("New expiry: %s (time until: %s)\n", newExpiry, time.Until(newExpiry))
+		Expect(time.Until(newExpiry)).To(BeNumerically(">", 20*time.Hour),
+			"new token should have at least 20h remaining (expecting ~24h)")
+
+		By("Verifying the long-lived token Secret does not exist on the spoke (OLS-4181)")
+		var tokenSec corev1.Secret
+		err = spoke1Client.Get(ctx, client.ObjectKey{
+			Name:      "lightspeed-alert-adapter-token",
+			Namespace: managedNamespace,
+		}, &tokenSec)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+			"long-lived lightspeed-alert-adapter-token Secret should not exist on spoke")
+	})
+
+	// -----------------------------------------------------------------------
+	// Test 4: Spoke unreachable → Connected=False, other spoke unaffected
 	// -----------------------------------------------------------------------
 	It("detects spoke1 as unreachable while spoke2 remains Connected=True", func() {
 		By("Simulating spoke1 unreachable: redirecting credential to non-routable IP")
@@ -222,7 +289,7 @@ var _ = Describe("Spoke lifecycle", Ordered, func() {
 	})
 
 	// -----------------------------------------------------------------------
-	// Test 4: Decommission reachable spoke → spoke-side cleanup, no warning Event
+	// Test 5: Decommission reachable spoke → spoke-side cleanup, no warning Event
 	// -----------------------------------------------------------------------
 	It("cleans up spoke2 (reachable) completely with no SpokeCleanupFailed event", func() {
 		By("Deleting SpokeCluster for spoke2 (still reachable)")
@@ -267,9 +334,9 @@ var _ = Describe("Spoke lifecycle", Ordered, func() {
 	})
 
 	// -----------------------------------------------------------------------
-	// Test 5: Decommission reachable spoke1 → spoke-side cleanup, no warning Event
-	// Restarts spoke1 if it was stopped in Test 3, verifies clean decommission,
-	// then re-creates spoke1 for Test 6.
+	// Test 6: Decommission reachable spoke1 → spoke-side cleanup, no warning Event
+	// Restarts spoke1 if it was stopped in Test 4, verifies clean decommission,
+	// then re-creates spoke1 for Test 7.
 	// -----------------------------------------------------------------------
 	It("cleans up spoke1 (reachable) with no SpokeCleanupFailed event", func() {
 		By("Restoring spoke1 credential (was redirected in Test 3)")
@@ -340,7 +407,7 @@ var _ = Describe("Spoke lifecycle", Ordered, func() {
 	})
 
 	// -----------------------------------------------------------------------
-	// Test 6: Decommission unreachable spoke → SpokeCleanupFailed Event,
+	// Test 7: Decommission unreachable spoke → SpokeCleanupFailed Event,
 	//         hub-side cleanup proceeds, finalizer released (OLS-3948 AC2)
 	// -----------------------------------------------------------------------
 	It("emits SpokeCleanupFailed event and releases finalizer when spoke cleanup cannot parse kubeconfig", func() {

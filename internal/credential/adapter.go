@@ -32,6 +32,7 @@ const (
 
 	AlertmanagerURLKey = "alertmanager-url"
 	TokenKey           = "token"
+	TokenExpiryKey     = "token-expiry"
 	CABundleKey        = "ca-bundle"
 
 	AdapterCredentialLabel = "hub.openshift.io/alert-credential-secret"
@@ -43,13 +44,14 @@ func AdapterCredentialName(spokeName string) string {
 }
 
 // BuildAdapterCredentialSecret constructs a hub-side Secret containing the adapter's
-// connection details for a spoke: AlertManager Route URL, SA bearer token, and
-// optionally the spoke's ingress CA for TLS verification. The Secret has a controller
-// owner reference to the SpokeCluster CR for automatic garbage collection.
+// connection details for a spoke: AlertManager Route URL, SA bearer token, token expiry
+// timestamp (RFC3339), and optionally the spoke's ingress CA for TLS verification.
+// The Secret has a controller owner reference to the SpokeCluster CR for automatic GC.
 func BuildAdapterCredentialSecret(
 	sc *hubv1alpha1.SpokeCluster,
 	alertmanagerURL string,
 	token string,
+	tokenExpiry string,
 	caBundle string,
 	operatorNamespace string,
 	scheme *runtime.Scheme,
@@ -57,6 +59,9 @@ func BuildAdapterCredentialSecret(
 	data := map[string][]byte{
 		AlertmanagerURLKey: []byte(alertmanagerURL),
 		TokenKey:           []byte(token),
+	}
+	if tokenExpiry != "" {
+		data[TokenExpiryKey] = []byte(tokenExpiry)
 	}
 	if caBundle != "" {
 		data[CABundleKey] = []byte(caBundle)
