@@ -25,6 +25,7 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -79,16 +80,6 @@ func TestProvisionAdapter(t *testing.T) {
 						},
 					},
 				},
-				&corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      AlertAdapterTokenSecret,
-						Namespace: ManagedNamespace,
-						Annotations: map[string]string{
-							"kubernetes.io/service-account.name": AlertAdapterServiceAccount,
-						},
-					},
-					Type: corev1.SecretTypeServiceAccountToken,
-				},
 			},
 			wantErr:           false,
 			validateResources: true,
@@ -137,21 +128,14 @@ func TestProvisionAdapter(t *testing.T) {
 					}
 				}
 
-				// Verify token Secret
+				// Verify long-lived token Secret is NOT created (TokenRequest API used instead)
 				tokenSecret := &corev1.Secret{}
-				if err := c.Get(context.Background(), client.ObjectKey{
-					Name:      AlertAdapterTokenSecret,
+				err := c.Get(context.Background(), client.ObjectKey{
+					Name:      "lightspeed-alert-adapter-token",
 					Namespace: ManagedNamespace,
-				}, tokenSecret); err != nil {
-					t.Errorf("Token Secret %s/%s not found: %v", ManagedNamespace, AlertAdapterTokenSecret, err)
-				} else {
-					if tokenSecret.Type != corev1.SecretTypeServiceAccountToken {
-						t.Errorf("Token Secret type = %q, want %q", tokenSecret.Type, corev1.SecretTypeServiceAccountToken)
-					}
-					ann := tokenSecret.Annotations["kubernetes.io/service-account.name"]
-					if ann != AlertAdapterServiceAccount {
-						t.Errorf("Token Secret annotation service-account.name = %q, want %q", ann, AlertAdapterServiceAccount)
-					}
+				}, tokenSecret)
+				if !apierrors.IsNotFound(err) {
+					t.Errorf("long-lived token Secret should NOT be created; got err: %v", err)
 				}
 			}
 		})
@@ -188,13 +172,6 @@ func TestDeprovisionAdapter(t *testing.T) {
 						Name:     MonitoringAlertmanagerViewRole,
 					},
 				},
-				&corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      AlertAdapterTokenSecret,
-						Namespace: ManagedNamespace,
-					},
-					Type: corev1.SecretTypeServiceAccountToken,
-				},
 			},
 			validateDeleted: true,
 		},
@@ -230,14 +207,6 @@ func TestDeprovisionAdapter(t *testing.T) {
 				}, rb)
 				if err == nil {
 					t.Errorf("RoleBinding %s/%s still exists after DeprovisionAdapter", MonitoringNamespace, AlertAdapterRoleBinding)
-				}
-
-				tokenSecret := &corev1.Secret{}
-				err = c.Get(context.Background(), client.ObjectKey{
-					Name: AlertAdapterTokenSecret, Namespace: ManagedNamespace,
-				}, tokenSecret)
-				if err == nil {
-					t.Errorf("Token Secret %s/%s still exists after DeprovisionAdapter", ManagedNamespace, AlertAdapterTokenSecret)
 				}
 			}
 		})
@@ -279,18 +248,6 @@ func TestProvisionAdapter_SentinelErrors(t *testing.T) {
 				},
 			},
 			wantSentinel: ErrCreatingAdapterRoleBinding,
-		},
-		{
-			name: "token secret create failure wraps ErrCreatingAdapterTokenSecret",
-			interceptFn: interceptor.Funcs{
-				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-					if s, ok := obj.(*corev1.Secret); ok && s.Type == corev1.SecretTypeServiceAccountToken {
-						return injectErr
-					}
-					return c.Create(ctx, obj, opts...)
-				},
-			},
-			wantSentinel: ErrCreatingAdapterTokenSecret,
 		},
 	}
 
