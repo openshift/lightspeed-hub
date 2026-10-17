@@ -41,13 +41,9 @@ var (
 	ErrMissingStandingKubeconfigKey = errors.New("standing kubeconfig secret missing key")
 	ErrParsingStandingKubeconfig    = errors.New("parsing standing kubeconfig")
 
-	// Adapter token
-	ErrGettingTokenSecret = errors.New("getting token Secret")
-	ErrMissingTokenKey    = errors.New("token Secret missing 'token' key")
-
 	// Adapter orchestration (reconcileAdapters)
 	ErrProvisioningAdapterResources = errors.New("provisioning adapter resources")
-	ErrReadingAdapterToken          = errors.New("reading adapter token")
+	ErrRequestingAdapterToken       = errors.New("requesting adapter SA token")
 	ErrDiscoveringAlertmanagerURL   = errors.New("discovering AlertManager URL")
 	ErrEnsuringAdapterCredential    = errors.New("ensuring adapter credential Secret")
 	ErrLabelingSpokeCluster         = errors.New("labeling SpokeCluster")

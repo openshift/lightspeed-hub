@@ -58,6 +58,7 @@ func TestBuildAdapterCredentialSecret(t *testing.T) {
 		sc,
 		"https://alertmanager-main-openshift-monitoring.apps.prod-rosa-east.example.com",
 		"fake-sa-token",
+		"2026-10-15T10:00:00Z",
 		"fake-ca-bundle",
 		"openshift-lightspeed",
 		testScheme(),
@@ -78,6 +79,9 @@ func TestBuildAdapterCredentialSecret(t *testing.T) {
 	}
 	if got := string(secret.Data[TokenKey]); got != "fake-sa-token" {
 		t.Errorf("Secret.Data[%s] = %q, want %q", TokenKey, got, "fake-sa-token")
+	}
+	if got := string(secret.Data[TokenExpiryKey]); got != "2026-10-15T10:00:00Z" {
+		t.Errorf("Secret.Data[%s] = %q, want %q", TokenExpiryKey, got, "2026-10-15T10:00:00Z")
 	}
 	if got := string(secret.Data[CABundleKey]); got != "fake-ca-bundle" {
 		t.Errorf("Secret.Data[%s] = %q, want %q", CABundleKey, got, "fake-ca-bundle")
@@ -101,7 +105,7 @@ func TestBuildAdapterCredentialSecret_OwnerRefError(t *testing.T) {
 	}
 	// Empty scheme — SpokeCluster not registered, SetControllerReference fails
 	emptyScheme := runtime.NewScheme()
-	_, err := BuildAdapterCredentialSecret(sc, "https://am.example.com", "token", "", "ns", emptyScheme)
+	_, err := BuildAdapterCredentialSecret(sc, "https://am.example.com", "token", "2026-10-15T10:00:00Z", "", "ns", emptyScheme)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -121,7 +125,7 @@ func TestBuildAdapterCredentialSecretEmptyCABundle(t *testing.T) {
 		},
 	}
 
-	secret, err := BuildAdapterCredentialSecret(sc, "https://am.test.example.com", "token", "", "ns", testScheme())
+	secret, err := BuildAdapterCredentialSecret(sc, "https://am.test.example.com", "token", "", "", "ns", testScheme())
 	if err != nil {
 		t.Fatalf("BuildAdapterCredentialSecret() error = %v", err)
 	}
