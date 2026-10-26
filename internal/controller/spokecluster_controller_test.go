@@ -19,6 +19,7 @@ package controller_test
 import (
 	"context"
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -85,21 +86,8 @@ func fakeAlertmanagerURL(_ context.Context, _ client.Client) (string, error) {
 	return "https://alertmanager-main-openshift-monitoring.apps.spoke.example.com", nil
 }
 
-func spokeTokenSecret() *corev1.Secret {
-	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "lightspeed-alert-adapter-token",
-			Namespace: "openshift-lightspeed-managed",
-			Annotations: map[string]string{
-				"kubernetes.io/service-account.name": "lightspeed-alert-adapter",
-			},
-		},
-		Type: corev1.SecretTypeServiceAccountToken,
-		Data: map[string][]byte{
-			"token":  []byte("spoke-sa-token"),
-			"ca.crt": []byte("spoke-ca"),
-		},
-	}
+func fakeSAToken(_ context.Context, _ *rest.Config, _, _ string) (string, time.Time, error) {
+	return "spoke-sa-token", time.Now().Add(20 * time.Hour), nil
 }
 
 func spokeIngressCAConfigMap() *corev1.ConfigMap {
@@ -123,6 +111,7 @@ func newReconcilerWithAdapterSupport(hubClient client.Client, credSource *fakeCr
 		return nil
 	}
 	reconciler.DiscoverAlertmanagerURL = fakeAlertmanagerURL
+	reconciler.RequestSAToken = fakeSAToken
 	return reconciler
 }
 
@@ -211,26 +200,9 @@ var _ = Describe("SpokeClusterReconciler", func() {
 		It("should reconcile happy path to Connected=True with adapter orchestration", func() {
 			sc := newSpokeClusterWithFinalizer("test-spoke")
 
-			// Pre-create token Secret with populated token (simulates token controller)
-			tokenSecret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "lightspeed-alert-adapter-token",
-					Namespace: "openshift-lightspeed-managed",
-					Annotations: map[string]string{
-						"kubernetes.io/service-account.name": "lightspeed-alert-adapter",
-					},
-				},
-				Type: corev1.SecretTypeServiceAccountToken,
-				Data: map[string][]byte{
-					"token":  []byte("spoke-sa-token"),
-					"ca.crt": []byte("spoke-ca"),
-				},
-			}
-
-			spokeScheme := newTestScheme()
 			spokeClient := fake.NewClientBuilder().
-				WithScheme(spokeScheme).
-				WithObjects(tokenSecret, spokeIngressCAConfigMap()).
+				WithScheme(newTestScheme()).
+				WithObjects(spokeIngressCAConfigMap()).
 				Build()
 
 			hubClient := fake.NewClientBuilder().
@@ -259,6 +231,7 @@ var _ = Describe("SpokeClusterReconciler", func() {
 			reconciler.DiscoverAlertmanagerURL = func(ctx context.Context, spokeClient client.Client) (string, error) {
 				return "https://alertmanager-main-openshift-monitoring.apps.spoke.example.com", nil
 			}
+			reconciler.RequestSAToken = fakeSAToken
 
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{Name: sc.Name},
@@ -310,6 +283,7 @@ var _ = Describe("SpokeClusterReconciler", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(adapterSecret.Data[credential.AlertmanagerURLKey])).To(Equal("https://alertmanager-main-openshift-monitoring.apps.spoke.example.com"))
 			Expect(string(adapterSecret.Data[credential.TokenKey])).To(Equal("spoke-sa-token"))
+			Expect(adapterSecret.Data).To(HaveKey(credential.TokenExpiryKey))
 			Expect(string(adapterSecret.Data[credential.CABundleKey])).To(Equal("-----BEGIN CERTIFICATE-----\nfake-ingress-ca\n-----END CERTIFICATE-----\n"))
 			Expect(adapterSecret.OwnerReferences).To(HaveLen(1))
 			Expect(adapterSecret.OwnerReferences[0].Name).To(Equal(sc.Name))
@@ -568,7 +542,7 @@ current-context: spoke
 
 			spokeClient := fake.NewClientBuilder().
 				WithScheme(newTestScheme()).
-				WithObjects(spokeTokenSecret(), spokeIngressCAConfigMap()).
+				WithObjects(spokeIngressCAConfigMap()).
 				Build()
 
 			hubClient := fake.NewClientBuilder().
@@ -944,11 +918,10 @@ current-context: spoke
 	Context("Adapter restart", func() {
 		It("should restart adapter deployment after adapter orchestration", func() {
 			sc := newSpokeClusterWithFinalizer("test-spoke")
-			tokenSecret := spokeTokenSecret()
 
 			spokeClient := fake.NewClientBuilder().
 				WithScheme(newTestScheme()).
-				WithObjects(tokenSecret, spokeIngressCAConfigMap()).
+				WithObjects(spokeIngressCAConfigMap()).
 				Build()
 
 			adapterDep := &appsv1.Deployment{
@@ -997,10 +970,9 @@ current-context: spoke
 				"hub.openshift.io/alert-credential-secret": "spoke-alert-credential-test-spoke",
 			}
 
-			tokenSecret := spokeTokenSecret()
 			spokeClient := fake.NewClientBuilder().
 				WithScheme(newTestScheme()).
-				WithObjects(tokenSecret, spokeIngressCAConfigMap()).
+				WithObjects(spokeIngressCAConfigMap()).
 				Build()
 
 			adapterDep := &appsv1.Deployment{
@@ -1040,6 +1012,149 @@ current-context: spoke
 			err = hubClient.Get(ctx, types.NamespacedName{Name: "lightspeed-hub-alerts-adapter", Namespace: testNamespace}, &dep)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(dep.Spec.Template.Annotations).NotTo(HaveKey("hub.openshift.io/restart-timestamp"))
+		})
+	})
+
+	Context("Token rotation", func() {
+		It("should request new token when no existing credential Secret exists", func() {
+			sc := newSpokeClusterWithFinalizer("test-spoke")
+			tokenRequestCalled := false
+
+			spokeClient := fake.NewClientBuilder().
+				WithScheme(newTestScheme()).
+				WithObjects(spokeIngressCAConfigMap()).
+				Build()
+
+			hubClient := fake.NewClientBuilder().
+				WithScheme(newTestScheme()).
+				WithObjects(sc, defaultHubConfig()).
+				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
+				Build()
+
+			reconciler := newReconcilerWithAdapterSupport(hubClient, &fakeCredentialSource{
+				cfg: &rest.Config{Host: "https://api.spoke.example.com:6443", BearerToken: "t", TLSClientConfig: rest.TLSClientConfig{CAData: []byte("ca")}},
+			}, spokeClient, testNamespace)
+			reconciler.RequestSAToken = func(_ context.Context, _ *rest.Config, _, _ string) (string, time.Time, error) {
+				tokenRequestCalled = true
+				return "new-token", time.Now().Add(24 * time.Hour), nil
+			}
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: sc.Name}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tokenRequestCalled).To(BeTrue())
+
+			var adapterSecret corev1.Secret
+			err = hubClient.Get(ctx, types.NamespacedName{
+				Name:      credential.AdapterCredentialName(sc.Name),
+				Namespace: testNamespace,
+			}, &adapterSecret)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(adapterSecret.Data[credential.TokenKey])).To(Equal("new-token"))
+			Expect(adapterSecret.Data).To(HaveKey(credential.TokenExpiryKey))
+		})
+
+		It("should reuse existing token when it has more than 20%% lifetime remaining", func() {
+			sc := newSpokeClusterWithFinalizer("test-spoke")
+			sc.Labels = map[string]string{
+				credential.AdapterCredentialLabel: credential.AdapterCredentialName(sc.Name),
+			}
+			tokenRequestCalled := false
+
+			freshExpiry := time.Now().Add(20 * time.Hour).UTC().Format(time.RFC3339)
+			existingSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      credential.AdapterCredentialName(sc.Name),
+					Namespace: testNamespace,
+				},
+				Data: map[string][]byte{
+					credential.TokenKey:           []byte("existing-token"),
+					credential.TokenExpiryKey:     []byte(freshExpiry),
+					credential.AlertmanagerURLKey: []byte("https://alertmanager-main-openshift-monitoring.apps.spoke.example.com"),
+				},
+			}
+
+			spokeClient := fake.NewClientBuilder().
+				WithScheme(newTestScheme()).
+				WithObjects(spokeIngressCAConfigMap()).
+				Build()
+
+			hubClient := fake.NewClientBuilder().
+				WithScheme(newTestScheme()).
+				WithObjects(sc, defaultHubConfig(), existingSecret).
+				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
+				Build()
+
+			reconciler := newReconcilerWithAdapterSupport(hubClient, &fakeCredentialSource{
+				cfg: &rest.Config{Host: "https://api.spoke.example.com:6443", BearerToken: "t", TLSClientConfig: rest.TLSClientConfig{CAData: []byte("ca")}},
+			}, spokeClient, testNamespace)
+			reconciler.RequestSAToken = func(_ context.Context, _ *rest.Config, _, _ string) (string, time.Time, error) {
+				tokenRequestCalled = true
+				return "new-token", time.Now().Add(24 * time.Hour), nil
+			}
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: sc.Name}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tokenRequestCalled).To(BeFalse(), "RequestSAToken should not be called when token is fresh")
+
+			var adapterSecret corev1.Secret
+			err = hubClient.Get(ctx, types.NamespacedName{
+				Name:      credential.AdapterCredentialName(sc.Name),
+				Namespace: testNamespace,
+			}, &adapterSecret)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(adapterSecret.Data[credential.TokenKey])).To(Equal("existing-token"))
+		})
+
+		It("should rotate token when less than 20%% lifetime remains", func() {
+			sc := newSpokeClusterWithFinalizer("test-spoke")
+			sc.Labels = map[string]string{
+				credential.AdapterCredentialLabel: credential.AdapterCredentialName(sc.Name),
+			}
+			tokenRequestCalled := false
+
+			nearExpiryTime := time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339)
+			existingSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      credential.AdapterCredentialName(sc.Name),
+					Namespace: testNamespace,
+				},
+				Data: map[string][]byte{
+					credential.TokenKey:           []byte("old-token"),
+					credential.TokenExpiryKey:     []byte(nearExpiryTime),
+					credential.AlertmanagerURLKey: []byte("https://alertmanager-main-openshift-monitoring.apps.spoke.example.com"),
+				},
+			}
+
+			spokeClient := fake.NewClientBuilder().
+				WithScheme(newTestScheme()).
+				WithObjects(spokeIngressCAConfigMap()).
+				Build()
+
+			hubClient := fake.NewClientBuilder().
+				WithScheme(newTestScheme()).
+				WithObjects(sc, defaultHubConfig(), existingSecret).
+				WithStatusSubresource(&hubv1alpha1.SpokeCluster{}).
+				Build()
+
+			reconciler := newReconcilerWithAdapterSupport(hubClient, &fakeCredentialSource{
+				cfg: &rest.Config{Host: "https://api.spoke.example.com:6443", BearerToken: "t", TLSClientConfig: rest.TLSClientConfig{CAData: []byte("ca")}},
+			}, spokeClient, testNamespace)
+			reconciler.RequestSAToken = func(_ context.Context, _ *rest.Config, _, _ string) (string, time.Time, error) {
+				tokenRequestCalled = true
+				return "rotated-token", time.Now().Add(24 * time.Hour), nil
+			}
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: sc.Name}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tokenRequestCalled).To(BeTrue(), "RequestSAToken should be called when token is near expiry")
+
+			var adapterSecret corev1.Secret
+			err = hubClient.Get(ctx, types.NamespacedName{
+				Name:      credential.AdapterCredentialName(sc.Name),
+				Namespace: testNamespace,
+			}, &adapterSecret)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(adapterSecret.Data[credential.TokenKey])).To(Equal("rotated-token"))
 		})
 	})
 

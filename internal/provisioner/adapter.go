@@ -34,14 +34,14 @@ const (
 
 	AlertAdapterServiceAccount = "lightspeed-alert-adapter"
 	AlertAdapterRoleBinding    = "lightspeed-hub:alert-adapter-monitoring-view"
-	AlertAdapterTokenSecret    = "lightspeed-alert-adapter-token"
 
 	MonitoringAlertmanagerViewRole = "monitoring-alertmanager-view"
 )
 
 // ProvisionAdapter creates the spoke-side resources needed by the alerts-adapter:
-// a ServiceAccount, a monitoring-alertmanager-view RoleBinding in openshift-monitoring,
-// and a long-lived token Secret. Idempotent — AlreadyExists errors are ignored.
+// a ServiceAccount and a monitoring-alertmanager-view RoleBinding in openshift-monitoring.
+// The hub operator requests a time-bound token via the TokenRequest API separately.
+// Idempotent — AlreadyExists errors are ignored.
 func ProvisionAdapter(ctx context.Context, spokeClient client.Client) error {
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
@@ -82,22 +82,6 @@ func ProvisionAdapter(ctx context.Context, spokeClient client.Client) error {
 		}
 	}
 
-	tokenSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      AlertAdapterTokenSecret,
-			Namespace: ManagedNamespace,
-			Annotations: map[string]string{
-				"kubernetes.io/service-account.name": AlertAdapterServiceAccount,
-			},
-		},
-		Type: corev1.SecretTypeServiceAccountToken,
-	}
-	if err := spokeClient.Create(ctx, tokenSecret); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("%w: %w", ErrCreatingAdapterTokenSecret, err)
-		}
-	}
-
 	return nil
 }
 
@@ -106,19 +90,6 @@ func ProvisionAdapter(ctx context.Context, spokeClient client.Client) error {
 // NotFound errors are ignored, and the aggregated error (if any) is returned to the caller.
 func DeprovisionAdapter(ctx context.Context, spokeClient client.Client, log logr.Logger) error {
 	var errs []error
-
-	tokenSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      AlertAdapterTokenSecret,
-			Namespace: ManagedNamespace,
-		},
-	}
-	if err := spokeClient.Delete(ctx, tokenSecret); err != nil {
-		if !apierrors.IsNotFound(err) {
-			log.Error(err, "failed to delete alert adapter token Secret", "name", AlertAdapterTokenSecret, "namespace", ManagedNamespace)
-			errs = append(errs, err)
-		}
-	}
 
 	rb := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{

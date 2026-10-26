@@ -24,5 +24,4 @@ var (
 	ErrCreatingClusterRoleBinding    = errors.New("creating ClusterRoleBinding")
 	ErrCreatingAdapterServiceAccount = errors.New("creating alert adapter ServiceAccount")
 	ErrCreatingAdapterRoleBinding    = errors.New("creating alert adapter RoleBinding")
-	ErrCreatingAdapterTokenSecret    = errors.New("creating alert adapter token Secret")
 )
