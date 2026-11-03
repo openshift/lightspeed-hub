@@ -8,7 +8,7 @@ Full lifecycle of a spoke cluster from registration through decommission.
 
 1. A spoke is registered by a `SpokeCluster` CR appearing on the hub cluster. The CR source depends on `HubConfig.spec.clusterRegistryMode`:
    - `secret`: admin creates the SpokeCluster CR manually with `spec.apiServer` and `spec.credentialSource.secret`.
-   - `mce`: hub operator auto-creates SpokeCluster CRs by watching MCE `ManagedCluster` CRs matching `HubConfig.spec.mce.selector.matchLabels`. The admin labels ManagedClusters to opt in.
+   - [PLANNED: OLS-3954] `mce`: hub continuously discovers all MCE ManagedClusters by default, including future additions; optional `HubConfig.spec.mce.selector.matchLabels` restricts scope. Documentation must warn about default-all enrollment.
 2. The CR MUST include `spec.apiServer` and `spec.credentialSource` matching the HubConfig mode. If the credential source type does not match `clusterRegistryMode`, the SpokeCluster is not managed and a status condition indicates the mismatch.
 3. The hub MUST validate that the spoke is reachable and the credentials are valid before marking the spoke as `Connected=True`. Connectivity MUST be validated using the standing kubeconfig (the saved copy), not the original admin kubeconfig.
 4. MVP uses direct kube-api connectivity. The admin is responsible for ensuring network path between hub and spoke.
@@ -106,20 +106,15 @@ The `proxy-url` field is handled transparently by Go's HTTP transport. Consumers
 
 ### Decommission
 
-21. Deleting a SpokeCluster CR MUST trigger cleanup:
-    - Delete per-spoke adapter credential Secrets on the hub (auto-GC via owner reference).
-    - Delete the standing kubeconfig Secret on the hub (auto-GC via owner reference).
-    - Delete spoke-side resources (`lightspeed-agent` SA, adapter SAs, ClusterRoleBindings, RoleBindings in `openshift-monitoring`, token Secrets, `openshift-lightspeed-managed` namespace) via remote kube-api using the standing kubeconfig.
-    - Standalone adapters detect the SpokeCluster deletion via their watch and stop polling that spoke automatically — no explicit adapter cleanup needed.
-    - [PLANNED] Delete AgenticRun CRD and related resources on the spoke (for embedded adapter support).
-22. Cleanup MUST be best-effort — if the spoke is unreachable, hub-side cleanup MUST still proceed and the CR deletion MUST succeed (with a warning Event on the SpokeCluster CR) rather than blocking indefinitely. Spoke-side resources will remain but are harmless (read-only SA, no secrets).
-23. Finalizers MUST be used to ensure cleanup runs before CR removal.
+21. [PLANNED: OLS-4786] SpokeCluster deletion gates new work/polling for only that target, then drains previously admitted workflows and their credential-consuming cleanup. Retain standing/adapter credentials, required access and controllers through all remaining phases. Approval waits are named blockers until completed or explicitly cancelled; no automatic cancellation/deadline. Manual/in-flight submission races require execution-side enforcement, not merely adapter restart.
+22. [PLANNED: OLS-4786] After shared drain completion, attempt removal of owned spoke resources (seed/adapter SAs, bindings, token Secrets and managed namespace), then delete generated hub standing/adapter Secrets and finalize registration deletion. Preserve source Secrets and workflow history. Unreachable-spoke remote cleanup is best-effort only after drain, with logs/Warning Events before CR removal; retained remote resources must be reported, not assumed harmless. Hub-side API/permission errors remain retryable and must not be falsely acknowledged.
+23. [PLANNED: OLS-4660] Protect registration lifetime and required credentials with finalizers and the reviewed shared gate/completion contract. Terminal phase labels alone do not prove credential-consuming cleanup completed. Identity/freshness-aware evidence must survive restarts and reject stale acknowledgements for recreated/readopted registrations. Other spokes and single-cluster workflows remain unaffected. Durable individual MCE exclusion is separate; eligible clusters can be rediscovered.
 
 ### Unmanaging
 
-24. When HubConfig is deleted, the hub operator MUST clean up resources it created for each spoke (standing kubeconfig Secret, spoke-side namespace/SA/ClusterRoleBindings) but MUST NOT delete the SpokeCluster CRs themselves. Removing CRs is the user's or GitOps's responsibility.
-25. When `clusterRegistryMode` changes, spokes whose credential source no longer matches the mode MUST be unmanaged: associated resources cleaned up, status condition set to indicate the mismatch.
-26. Unmanaging uses the same best-effort cleanup as decommission — spoke-side cleanup errors do not block the operation.
+24. [PLANNED: OLS-4787] HubConfig deletion is fleet decommissioning, not unmanagement: gate discovery/enrollment/new work, drain, then delete all registrations (including staged ones) and generated credentials. Preserve source Secrets/static permissions/history; acknowledge before OLS removes runtime/HubConfig. Re-enable requires fresh intent and registration/discovery. GitOps must stop reapplying deleted resources.
+25. [PLANNED: OLS-4781] Registry-mode-change unmanagement instead retains SpokeCluster/source Secret. Gate/drain affected registrations using old-source access, then remove generated resources and report mismatch. Matching spokes continue and a later matching supported mode can reprovision retained registrations. Repeated changes/readoption/discovery must not apply stale cleanup; do not substitute ignore-without-cleanup or require deleting all registrations first.
+26. [PLANNED: OLS-4781] Mode-change cleanup reuses the shared drain contract and post-drain remote best-effort/hub-error-retry ordering. Selector narrowing, ManagedCluster removal, credential migration, prerequisite configuration deletion (OLS-4782), general uninstall and durable exclusion remain separate scope.
 
 ## Planned Changes
 

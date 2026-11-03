@@ -33,6 +33,14 @@ How the hub coordinates agentic operations across multiple spoke clusters.
 13. [PLANNED] Approval on MirrorAgenticRun CRs is propagated back to the spoke's AgenticRun by the hub operator via remote kube-api.
 14. [PLANNED] Spoke sync controller pushes AgenticRun status updates to the hub.
 
+## Protected fleet lifecycle [PLANNED: OLS-4660, OLS-4785–OLS-4787]
+
+15. HubConfig deletion closes discovery/enrollment and new fleet execution; individual deletion closes only the target. Coordinate adapter suppression and manual/controller race enforcement. Existing admitted workflows retain remaining phases and credential-consuming cleanup. Approval waits remain visible blockers without automatic cancellation or abandonment timeout; never implement drain by globally suspending AgenticOLSConfig.
+16. S0 with OLS-4659/4661 must finalize the admitted-run boundary, condition writers, identity/freshness and cleanup-completion acknowledgement. Hub owns fleet/drain/decommission progress, OLS owns controller availability/runtime removal, Agentic operator owns run progression/cleanup. Use non-overlapping conflict-safe writes and restart-safe evidence; terminal phase alone is insufficient. Preserve/recreate shutdown runtime without resuming enrollment while terminating.
+17. After drain, decommission every registration including staged resources and remove generated credentials. Remote cleanup is best-effort with warnings; hub-side API/permission failures remain retryable. Preserve administrator source Secrets, static installation permissions and workflow history. Emit cleanup details before CR removal; expiring Events/deleted status are not durable reports.
+18. Registry-mode changes reuse the contract under OLS-4781 but retain registration/source Secret after generated-resource cleanup. Preserve old-source access through drain and reject stale cleanup after readoption. Missing HubConfig never authorizes new fleet work. Local workflows and unaffected spokes retain normal behavior.
+19. OLS-4639 verifies hub-only installed-bundle lifecycle; OLS-4788 verifies real-spoke drain/credential ordering, races, approval blockers, cancellation, restarts and isolation. OLS-4782 prerequisite deletion, durable MCE exclusion, selector/removal policy and general uninstall/recovery are outside this phase.
+
 ## Planned Changes
 
 | Ticket | Summary |
