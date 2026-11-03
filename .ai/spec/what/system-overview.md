@@ -18,7 +18,7 @@ The Lightspeed Hub is a Kubernetes operator that runs on a central hub cluster a
 6a. [PLANNED: OLS-4152] **Spoke Health Handler** — a `manager.RunnableFunc` that runs independently of the reconciler on a configurable interval (CLI flag `--health-check-interval`, default 5 min). Probes each managed spoke's kube-api via `discovery.ServerVersion()` using the standing kubeconfig and patches the `Connected` status condition on change. Status changes trigger the SpokeCluster reconciler via the watch.
 7. **Credential Broker** — pluggable interface returning a `rest.Config` for a given spoke. Implementations: `SecretCredentialSource` (stored kubeconfig), `MCECredentialSource` (MCE cluster-proxy). [PLANNED] `BackplaneCredentialSource`.
 8. **Adapter Orchestrator** — provisions per-spoke adapter credential Secrets on the hub and labels SpokeCluster CRs for adapter discovery. For each adapter type, creates a spoke-side SA with minimum RBAC, obtains a token, discovers the spoke's event-source endpoint, and stores everything in a credential Secret (`spoke-{adapter-type}-credential-{spoke-name}`). Adapters watch SpokeCluster CRs to discover spokes dynamically — no per-spoke adapter Deployments. The alerts-adapter is the first implementation — see `alerts-adapter-multicluster.md` in the parent spec.
-8a. **Adapter Deployment Manager** — the HubConfig controller creates and manages a dedicated multicluster alerts-adapter Deployment (`lightspeed-hub-alerts-adapter`) on the hub, separate from the local single-cluster alerts-adapter deployed by lightspeed-operator. Resources: SA, RBAC, ConfigMap (`hub-alerts-adapter-config`), Deployment. The adapter is deployed when HubConfig exists and removed when HubConfig is deleted. The adapter image is configured via the `--alerts-adapter-image` CLI flag on the hub operator.
+8a. **Adapter Deployment Manager** — the HubConfig controller creates and manages a dedicated multicluster alerts-adapter Deployment (`lightspeed-hub-alerts-adapter`) on the hub, separate from the local single-cluster alerts-adapter deployed by lightspeed-operator. Resources: SA, RBAC, ConfigMap (`hub-alerts-adapter-config`), Deployment. [PLANNED: OLS-4787] The adapter is active only for an accepted, non-terminating HubConfig; deletion suppresses new polling/work before drain and removes runtime only in the coordinated shutdown order. The adapter image is configured via the `--alerts-adapter-image` CLI flag on the hub operator.
 8b. **Hub-managed adapter egress exception**: The multicluster adapter uses the hub Kubernetes API to discover spokes and connects to their AlertManager Routes using credential Secrets provisioned as spokes register; its `ALERTMANAGER_URL` is empty so it does not poll the hub's local AlertManager. [PLANNED: OLS-4171] The hub MUST NOT introduce a hub-managed egress NetworkPolicy for this adapter under the current design. Spoke Route hostnames and potentially ports vary as spokes register; standard NetworkPolicy cannot allow-list destinations by hostname, and a fixed pod-level allow-list would disrupt supported spokes. This is deliberate non-coverage, not proof of HPSTRAT-104 compliance or a guarantee of unrestricted connectivity if cluster-admin policies apply. The local, operator-managed single-cluster adapter has a separate, restricted-egress policy plan; do not apply that plan to this deployment. Tightening hub-adapter egress requires a separately approved variable-destination strategy and tests against supported spokes. See the [parent operand-network-policies contract](https://github.com/openshift/ols/pull/104).
 
 ### Spoke Onboarding
@@ -41,7 +41,7 @@ The Lightspeed Hub is a Kubernetes operator that runs on a central hub cluster a
 
 ### Deployment
 
-18. The hub operator is deployed via Helm chart.
+18. [PLANNED: OLS-4661, OLS-4784] The unified OLS bundle installs hub APIs/static ServiceAccount/RBAC but no hub Deployment. Creating HubConfig `cluster` activates an OLS-operator-managed hub operand; there is no OLSConfig activation field or third CSV Deployment. Static permissions have sole OLM ownership and survive fleet disablement. OCP 5.0+ is a runtime boundary, not a separate bundle; HubConfig does not bypass platform gating or independent unsuspended AgenticOLSConfig workflow opt-in. Unknown platform state is not unsupported or cleanup intent.
 19. All hub operator workloads run in the `openshift-lightspeed` namespace.
 
 ## CRD: HubConfig
@@ -77,7 +77,7 @@ spec:
 | Field | Required | Description |
 |---|---|---|
 | `clusterRegistryMode` | Yes | How spoke clusters are registered and credentials managed. `secret`: manual SpokeCluster CRs with stored kubeconfigs. `mce`: auto-discover from MCE ManagedCluster CRs. |
-| `mce.selector.matchLabels` | When mode=mce | Label selector filtering which ManagedCluster CRs become spokes. Only ManagedClusters matching these labels are auto-discovered. When omitted, all ManagedClusters are included. |
+| `mce.selector.matchLabels` | No; applies in mce mode | Label selector filtering which ManagedCluster CRs become spokes. Only ManagedClusters matching these labels are auto-discovered. When omitted, all ManagedClusters are included. |
 
 ### Validation
 
@@ -87,17 +87,19 @@ spec:
 ### HubConfig Lifecycle
 
 22. When no HubConfig exists, the hub operator MUST ignore all SpokeCluster CRs. No provisioning, no connectivity checks, no standing kubeconfigs. SpokeCluster CRs MAY exist but are not managed.
-23. When HubConfig is present, a SpokeCluster is managed only if its `credentialSource` type matches `clusterRegistryMode`. Mismatched SpokeCluster CRs MUST be ignored with a status condition indicating the mismatch (e.g. `Ready=False`, reason `CredentialSourceMismatch`).
-24. When HubConfig is deleted, the hub operator MUST stop managing all spokes and clean up resources it created for them (standing kubeconfig Secrets, spoke-side namespace/SA/ClusterRoleBindings). The operator MUST NOT delete SpokeCluster CRs — removing CRs is the user's (or GitOps's) responsibility.
-25. When HubConfig is created or `clusterRegistryMode` changes, the hub operator MUST re-evaluate all SpokeCluster CRs. Spokes matching the new mode are adopted; non-matching spokes are unmanaged with their associated resources cleaned up and a status condition set.
+23. When HubConfig is present, normal provisioning applies only to matching credential sources. Initially ineligible staged registrations stay inactive and report mismatch; [PLANNED: OLS-4781] previously managed registrations made ineligible by a mode change first drain, then unmanage/clean generated resources under rule 25. Mismatch is not permission to abandon existing consumers or skip cleanup.
+24. [PLANNED: OLS-4660, OLS-4787] HubConfig deletion gates new fleet activity, drains admitted workflows and credential-consuming cleanup, then decommissions all registrations including staged ones. Delete registrations/generated credentials, not source Secrets, installation-owned APIs/permissions or workflow history. After fresh completion acknowledgement the OLS operator removes runtime and releases lifecycle protection. No automatic cancellation or deadline may abandon active/approval-waiting work.
+25. [PLANNED: OLS-4781] Creation/mode changes re-evaluate registrations. On a mode change, gate/drain newly ineligible spokes while retaining old-source access, then unmanage/clean generated resources and report mismatch. Retain SpokeCluster CRs/source Secrets; matching supported mode may reprovision them. Coordinate discovery and reject stale cleanup during repeated changes/readoption; do not require deleting all registrations first.
 26. A HubConfig create, update, or delete MUST trigger reconciliation of all SpokeCluster CRs.
 
-### MCE Auto-Discovery
+### MCE Auto-Discovery [PLANNED: OLS-3954]
 
-27. When `clusterRegistryMode: mce`, the hub operator MUST watch MCE `ManagedCluster` CRs and automatically create/delete `SpokeCluster` CRs for matching clusters.
+MCE examples describe target behavior, not proof of implemented discovery. Selecting MCE without a selector authorizes the entire managed fleet, including future additions; installation alone never authorizes discovery.
+
+27. When `clusterRegistryMode: mce`, the hub operator MUST continuously watch MCE ManagedClusters and create registrations for eligible clusters, including future matches. Removal/selector-change policy is separately scoped under rule 30; discovery must not resume during HubConfig termination or defeat mode-change draining.
 28. The `mce.selector.matchLabels` field filters which ManagedClusters are included. When omitted, all ManagedClusters are included.
 29. Auto-created SpokeCluster CRs MUST have `spec.apiServer` and `spec.credentialSource.mce.managedClusterName` populated from the ManagedCluster CR.
-30. When a ManagedCluster is deleted or its labels no longer match the selector, the corresponding SpokeCluster CR MUST be deleted (triggering standard decommission cleanup).
+30. ManagedCluster removal and selector-narrowing lifecycle policy require separate follow-up; do not infer immediate cleanup or durable exclusion from this phase. Deleting an individual auto-discovered registration is not permanent exclusion while it remains discovery-eligible.
 31. When `clusterRegistryMode: mce`, manually created SpokeCluster CRs MUST be rejected by a validating webhook — MCE is the single source of truth.
 32. Auto-created SpokeCluster CRs MUST have an owner label (`hub.openshift.io/managed-by: mce-auto-discovery`) to distinguish them from manually created ones.
 
@@ -171,6 +173,10 @@ status:
 | `CRDInstalled` | AgenticRun CRD installed on spoke for embedded adapters |
 | `WatcherActive` | Dedicated watcher running for spoke AgenticRun CRs |
 | `AgenticStackReady` | Spoke-local mode: full agentic stack deployed to spoke |
+
+### Planned lifecycle status ownership [PLANNED: OLS-4659, OLS-4660]
+
+The OLS operator owns controller availability; hub owns configuration/fleet/drain/decommission progress; Agentic operator owns workflow/cleanup evidence. Writers must patch non-overlapping conditions conflict-safely. Exact condition identifiers and gate/acknowledgement wire APIs require S0 review. Ready means controller operational and configuration accepted, not all spokes healthy; zero spokes is valid. Report approval/run blockers and incomplete remote cleanup before CR removal. Logs/Warning Events have retention limits, not a durable report API. Re-enable requires a fresh HubConfig and new registration/discovery; GitOps must stop reapplying deleted objects. Prerequisite deletion (OLS-4782) is deferred, outside this phase.
 
 ## What the Hub Operator Does NOT Do
 

@@ -11,9 +11,13 @@ Behavioral rules under test live in
 [spoke-lifecycle.md](spoke-lifecycle.md) and
 [fleet-coordination.md](fleet-coordination.md).
 
-> **Status:** All rules are `[PLANNED]`. The hub is greenfield — no controller,
-> CRD, or `make` target exists yet. This spec defines the target test
-> architecture so tests are written alongside the code.
+> **Status:** Coverage below is planned, not an implementation inventory. Hub controllers/CRDs and independent tests already exist. Verify landed work rather than treating the repository as greenfield.
+
+## On-demand lifecycle coverage [PLANNED: OLS-4639, OLS-4788]
+
+OLS-4639 owns hub-only installed-bundle validation: unified static assets/images on supported OCP versions, no CSV/idle hub Deployment, sole installation permission ownership, permission-only SA packaging, pinned sync, overrides/mirroring, staged inactivity, activation/configuration recovery, non-overlapping status writers, rollouts/self-healing, deletion during startup/restarts, and protected final runtime teardown. Use an OpenShift/OLM-capable environment for platform/package assertions; kind alone cannot prove them.
+
+OLS-4788 owns real-spoke draining/cleanup evidence: manual/adapter race guards, remaining admitted phases, named approval blockers, explicit cancellation/confirmed teardown, credential retention through cleanup, individual/fleet/mode-change isolation, remote best-effort only after drain, retryable hub-side failures, stale acknowledgements/restarts, fresh re-enable and GitOps reapplication. Mode-change cleanup retains registrations/source Secrets and handles readoption safely; MCE/default-all tests coordinate actual OLS-3954 support. OLS-4660 shared integration fixtures validate identity/freshness, admitted-run boundaries, condition writers and acknowledgement ordering. Match examples to reviewed OLS-4659/4660/4661 APIs and S0–S4 evidence. Hub-only/fake tests do not prove remote safety; OLS-4782/deferred policies are not current-phase blockers.
 
 ## Design
 
@@ -49,11 +53,8 @@ over real remote kube-api.
 - **Credential broker**: `SecretCredentialSource` returns a usable `rest.Config`
   from a referenced Secret; a `credentialSource` that mismatches the HubConfig
   mode is rejected (spoke-lifecycle rules 9–13).
-- **HubConfig webhook**: a SpokeCluster whose mode disagrees with the HubConfig
-  singleton is rejected.
-- **Decommission best-effort**: when the spoke is unreachable, the SpokeCluster
-  CR still deletes with a warning condition rather than blocking
-  (spoke-lifecycle rule 18).
+- **Registration validation**: preserve credential-source/schema checks (OLS-4637) without requiring HubConfig-first creation. Staged valid registrations are inactive; registry-mode changes follow drain-first unmanagement under OLS-4781.
+- **Decommission best-effort after drain**: unreachable-spoke remote cleanup can finish with logs/Warning Events before CR deletion only after workflows and credential-consuming cleanup finish. Hub-side API/permission failures retry; deleted status/expiring Events are not durable cleanup reports.
 
 **Real cross-cluster behavior:**
 
