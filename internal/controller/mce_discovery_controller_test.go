@@ -153,7 +153,7 @@ func existingMSA(namespace string) *unstructured.Unstructured {
 }
 
 func newDiscoveryReconciler(hubClient client.Client, apiReader client.Reader) *controller.MCEDiscoveryReconciler {
-	return controller.NewMCEDiscoveryReconciler(hubClient, apiReader)
+	return controller.NewMCEDiscoveryReconciler(hubClient, apiReader, "openshift-lightspeed")
 }
 
 var _ = Describe("MCEDiscoveryReconciler", func() {

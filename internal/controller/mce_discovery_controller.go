@@ -18,22 +18,28 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
@@ -82,8 +88,9 @@ var managedClusterGVK = schema.GroupVersionKind{
 // SpokeCluster CRs for clusters matching the HubConfig MCE selector.
 // It uses a singleton reconcile key for full inventory snapshot reconciliation.
 type MCEDiscoveryReconciler struct {
-	client    client.Client
-	apiReader client.Reader // uncached reader for ManagedCluster operations
+	client            client.Client
+	apiReader         client.Reader // uncached reader for ManagedCluster operations
+	operatorNamespace string
 
 	// Lazy ManagedCluster watch registration. The watch is registered
 	// only after confirming the ManagedCluster API exists, avoiding
@@ -97,10 +104,12 @@ type MCEDiscoveryReconciler struct {
 func NewMCEDiscoveryReconciler(
 	hubClient client.Client,
 	apiReader client.Reader,
+	operatorNamespace string,
 ) *MCEDiscoveryReconciler {
 	return &MCEDiscoveryReconciler{
-		client:    hubClient,
-		apiReader: apiReader,
+		client:            hubClient,
+		apiReader:         apiReader,
+		operatorNamespace: operatorNamespace,
 	}
 }
 
@@ -121,11 +130,19 @@ func (r *MCEDiscoveryReconciler) Reconcile(ctx context.Context, _ ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
+	if !hubConfig.DeletionTimestamp.IsZero() {
+		// HubConfig is terminating — do not enroll new spokes.
+		if err := r.cleanupAllDiscoverySpokes(ctx); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.cleanupOrphanedCompanions(ctx)
+	}
+
 	if hubConfig.Spec.ClusterRegistryMode != hubv1alpha1.ClusterRegistryModeMCE {
-		// Not in MCE mode — no discovery. Don't delete existing discovery
-		// spokes on mode change; the SpokeCluster controller handles
-		// unmanaging via credential source mismatch.
-		return ctrl.Result{}, nil
+		// Not in MCE mode. Revoke MSA credentials and spoke RBAC from any
+		// prior MCE phase. SpokeCluster CRs are left in place; the
+		// SpokeCluster controller unmanages them via CredentialSourceMismatch.
+		return ctrl.Result{}, r.cleanupAllDiscoveryCompanions(ctx)
 	}
 
 	// List ManagedClusters via uncached reader
@@ -151,11 +168,32 @@ func (r *MCEDiscoveryReconciler) Reconcile(ctx context.Context, _ ctrl.Request) 
 		matchLabels = selector.Selector.MatchLabels
 	}
 
+	// List existing discovery-owned SpokeCluster CRs first so we can
+	// preserve enrolled spokes whose API config is temporarily unavailable.
+	var spokeList hubv1alpha1.SpokeClusterList
+	if err := r.client.List(ctx, &spokeList, client.MatchingLabels{
+		credential.MCEManagedByLabel: credential.MCEManagedByValue,
+	}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("listing discovery SpokeClusters: %w", err)
+	}
+
+	existing := make(map[string]*hubv1alpha1.SpokeCluster, len(spokeList.Items))
+	for i := range spokeList.Items {
+		existing[spokeList.Items[i].Name] = &spokeList.Items[i]
+	}
+
 	// Build the desired set of discovered spokes
 	desired := make(map[string]discoveredSpoke)
 	for i := range mcList.Items {
 		mc := &mcList.Items[i]
 		name := mc.GetName()
+
+		// A detaching cluster must not be re-enrolled. Removing it from the
+		// desired set starts SpokeCluster deprovision while the MSA token is valid.
+		if mc.GetDeletionTimestamp() != nil {
+			logger.V(1).Info("Skipping terminating ManagedCluster", "managedCluster", name)
+			continue
+		}
 
 		// Exclude the hub self-import (local-cluster=true)
 		mcLabels := mc.GetLabels()
@@ -169,9 +207,21 @@ func (r *MCEDiscoveryReconciler) Reconcile(ctx context.Context, _ ctrl.Request) 
 			continue
 		}
 
-		// Extract API server URL
+		// Extract API server URL. If the config is temporarily unavailable
+		// (agent restart, re-import) but a SpokeCluster already exists,
+		// keep the spoke enrolled with its current apiServer to avoid a
+		// full deprovision/re-enrollment cycle.
 		apiServer, err := extractAPIServer(mc)
 		if err != nil {
+			if sc, ok := existing[name]; ok {
+				logger.Info("ManagedCluster API config unavailable, preserving existing spoke",
+					"managedCluster", name, "error", err)
+				desired[name] = discoveredSpoke{
+					apiServer:          sc.Spec.APIServer,
+					managedClusterName: name,
+				}
+				continue
+			}
 			logger.Error(err, "Skipping ManagedCluster with invalid API config", "managedCluster", name)
 			continue
 		}
@@ -182,20 +232,10 @@ func (r *MCEDiscoveryReconciler) Reconcile(ctx context.Context, _ ctrl.Request) 
 		}
 	}
 
-	// List existing discovery-owned SpokeCluster CRs
-	var spokeList hubv1alpha1.SpokeClusterList
-	if err := r.client.List(ctx, &spokeList, client.MatchingLabels{
-		credential.MCEManagedByLabel: credential.MCEManagedByValue,
-	}); err != nil {
-		return ctrl.Result{}, fmt.Errorf("listing discovery SpokeClusters: %w", err)
-	}
-
-	existing := make(map[string]*hubv1alpha1.SpokeCluster, len(spokeList.Items))
-	for i := range spokeList.Items {
-		existing[spokeList.Items[i].Name] = &spokeList.Items[i]
-	}
-
-	// Create or update desired SpokeClusters
+	// Create or update desired SpokeClusters. Per-spoke errors are
+	// collected so one failing spoke does not block the rest or prevent
+	// the delete/orphan-cleanup loops from running.
+	var errs []error
 	for name, ds := range desired {
 		if sc, ok := existing[name]; ok {
 			// Restore discovery-owned fields if they drifted
@@ -214,7 +254,8 @@ func (r *MCEDiscoveryReconciler) Reconcile(ctx context.Context, _ ctrl.Request) 
 			}
 			if needsUpdate {
 				if err := r.client.Update(ctx, sc); err != nil {
-					return ctrl.Result{}, fmt.Errorf("updating SpokeCluster %q: %w", name, err)
+					errs = append(errs, fmt.Errorf("updating SpokeCluster %q: %w", name, err))
+					continue
 				}
 				logger.Info("Restored discovery SpokeCluster fields", "spoke", name)
 			}
@@ -227,7 +268,8 @@ func (r *MCEDiscoveryReconciler) Reconcile(ctx context.Context, _ ctrl.Request) 
 					"managedCluster", name, "existingLabels", existingManual.Labels)
 				continue
 			} else if !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, fmt.Errorf("checking for collision on %q: %w", name, err)
+				errs = append(errs, fmt.Errorf("checking for collision on %q: %w", name, err))
+				continue
 			}
 
 			// Create new SpokeCluster
@@ -249,10 +291,10 @@ func (r *MCEDiscoveryReconciler) Reconcile(ctx context.Context, _ ctrl.Request) 
 			}
 			if err := r.client.Create(ctx, sc); err != nil {
 				if apierrors.IsAlreadyExists(err) {
-					// Race — already created by another reconcile
 					continue
 				}
-				return ctrl.Result{}, fmt.Errorf("creating SpokeCluster %q: %w", name, err)
+				errs = append(errs, fmt.Errorf("creating SpokeCluster %q: %w", name, err))
+				continue
 			}
 			logger.Info("Created discovery SpokeCluster", "spoke", name, "apiServer", ds.apiServer)
 		}
@@ -261,36 +303,34 @@ func (r *MCEDiscoveryReconciler) Reconcile(ctx context.Context, _ ctrl.Request) 
 		// Both are idempotent; retrying on every reconcile recovers from
 		// transient failures and crashes between operations.
 		if err := r.ensureMSA(ctx, ds.managedClusterName); err != nil {
-			return ctrl.Result{}, fmt.Errorf("ensuring MSA for %q: %w", name, err)
+			errs = append(errs, fmt.Errorf("ensuring MSA for %q: %w", name, err))
+			continue
 		}
 		if err := r.ensureMSARBAC(ctx, ds.managedClusterName); err != nil {
-			return ctrl.Result{}, fmt.Errorf("ensuring spoke RBAC for %q: %w", name, err)
+			errs = append(errs, fmt.Errorf("ensuring spoke RBAC for %q: %w", name, err))
 		}
 	}
 
 	// Delete discovery SpokeClusters no longer in the desired set.
-	// The SpokeCluster must be fully gone (finalizer complete) before we
-	// revoke MSA/RBAC, because the finalizer uses the standing kubeconfig
-	// (backed by the MSA token) for spoke-side cleanup.
 	for name, sc := range existing {
 		if _, ok := desired[name]; !ok {
 			if sc.DeletionTimestamp.IsZero() {
-				// Not yet deleting — initiate deletion. The SpokeCluster watch
-				// will requeue when the finalizer completes.
 				if err := r.client.Delete(ctx, sc); err != nil && !apierrors.IsNotFound(err) {
-					return ctrl.Result{}, fmt.Errorf("deleting SpokeCluster %q: %w", name, err)
+					errs = append(errs, fmt.Errorf("deleting SpokeCluster %q: %w", name, err))
+				} else {
+					logger.Info("Initiated SpokeCluster deletion, waiting for finalizer", "spoke", name)
 				}
-				logger.Info("Initiated SpokeCluster deletion, waiting for finalizer", "spoke", name)
 			}
-			// else: deletion in progress, wait for finalizer to complete.
-			// MSA/RBAC stay alive until the SpokeCluster is fully gone.
 		}
 	}
 
 	if err := r.cleanupOrphanedCompanions(ctx); err != nil {
-		return ctrl.Result{}, err
+		errs = append(errs, err)
 	}
 
+	if len(errs) > 0 {
+		return ctrl.Result{}, errors.Join(errs...)
+	}
 	logger.V(1).Info("Discovery reconciliation complete", "desired", len(desired), "existing", len(existing))
 	return ctrl.Result{}, nil
 }
@@ -447,7 +487,16 @@ func (r *MCEDiscoveryReconciler) ensureMSARBAC(ctx context.Context, managedClust
 		},
 	}
 
-	_ = unstructured.SetNestedSlice(mw.Object, []interface{}{clusterRole, crb, nsRole, nsRB}, "spec", "workload", "manifests")
+	// Prepend a Namespace manifest so work-manager creates the namespace
+	// before applying Role and RoleBinding. Without it, those fail on fresh
+	// spokes where the namespace doesn't exist yet.
+	nsManifest := map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       "Namespace",
+		"metadata":   map[string]interface{}{"name": spokeProvisionedNamespace},
+	}
+
+	_ = unstructured.SetNestedSlice(mw.Object, []interface{}{nsManifest, clusterRole, crb, nsRole, nsRB}, "spec", "workload", "manifests")
 
 	if err := r.client.Create(ctx, mw); err != nil {
 		if apierrors.IsAlreadyExists(err) {
@@ -460,8 +509,13 @@ func (r *MCEDiscoveryReconciler) ensureMSARBAC(ctx context.Context, managedClust
 				return fmt.Errorf("ManifestWork %s/%s exists but is not owned by discovery (labels: %v)",
 					managedClusterName, msaRBACWorkName, existing.GetLabels())
 			}
-			// Reconcile the spec so RBAC rule changes reach existing spokes.
+			// Only update if the spec actually changed, avoiding unnecessary
+			// work-manager re-applies on every reconcile.
 			desiredManifests, _, _ := unstructured.NestedSlice(mw.Object, "spec", "workload", "manifests")
+			existingManifests, _, _ := unstructured.NestedSlice(existing.Object, "spec", "workload", "manifests")
+			if reflect.DeepEqual(desiredManifests, existingManifests) {
+				return nil
+			}
 			_ = unstructured.SetNestedSlice(existing.Object, desiredManifests, "spec", "workload", "manifests")
 			if updateErr := r.client.Update(ctx, &existing); updateErr != nil {
 				return fmt.Errorf("updating ManifestWork spec %s/%s: %w", managedClusterName, msaRBACWorkName, updateErr)
@@ -516,6 +570,57 @@ func (r *MCEDiscoveryReconciler) deleteMSA(ctx context.Context, managedClusterNa
 	return nil
 }
 
+// cleanupAllDiscoveryCompanions deletes discovery-owned ManifestWork and MSA
+// for each spoke, but only after the SpokeCluster controller has finished
+// unmanaging that spoke (indicated by the standing kubeconfig Secret being
+// gone). This ensures spoke-side deprovision can complete using the MSA
+// token before the ManifestWork RBAC is revoked.
+// Returns a non-nil error (triggering requeue) if any spoke still has a
+// standing kubeconfig and cannot be cleaned up yet.
+func (r *MCEDiscoveryReconciler) cleanupAllDiscoveryCompanions(ctx context.Context) error {
+	logger := log.FromContext(ctx)
+	msaList := &unstructured.UnstructuredList{}
+	msaList.SetGroupVersionKind(schema.GroupVersionKind{Group: msaGroup, Version: msaVersion, Kind: msaKind + "List"})
+	if err := r.client.List(ctx, msaList, client.MatchingLabels{
+		credential.MCEManagedByLabel: credential.MCEManagedByValue,
+	}); err != nil {
+		if meta.IsNoMatchError(err) {
+			return nil // MSA CRD not installed — nothing to clean up
+		}
+		return fmt.Errorf("listing discovery MSAs for companion cleanup: %w", err)
+	}
+	pending := 0
+	for i := range msaList.Items {
+		ns := msaList.Items[i].GetNamespace()
+		// Wait for the SpokeCluster controller to finish unmanaging before
+		// revoking credentials. The standing kubeconfig Secret is deleted as
+		// the last step of unmanageSpoke; its absence means cleanup is done.
+		var secret corev1.Secret
+		secretKey := client.ObjectKey{
+			Name:      credential.StandingKubeconfigName(ns),
+			Namespace: r.operatorNamespace,
+		}
+		if err := r.client.Get(ctx, secretKey, &secret); err == nil {
+			logger.Info("Standing kubeconfig still exists, deferring companion cleanup", "spoke", ns)
+			pending++
+			continue
+		} else if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("checking standing kubeconfig for spoke %q: %w", ns, err)
+		}
+		if err := r.deleteMSARBAC(ctx, ns, logger); err != nil {
+			return fmt.Errorf("deleting ManifestWork for spoke %q: %w", ns, err)
+		}
+		if err := r.deleteMSA(ctx, ns, logger); err != nil {
+			return fmt.Errorf("deleting MSA for spoke %q: %w", ns, err)
+		}
+		logger.Info("Cleaned up MCE companions after mode switch", "spoke", ns)
+	}
+	if pending > 0 {
+		return fmt.Errorf("%d spoke(s) still have standing kubeconfigs, requeueing", pending)
+	}
+	return nil
+}
+
 // cleanupOrphanedCompanions finds discovery-owned MSAs whose SpokeCluster
 // no longer exists and deletes the ManifestWork first, then the MSA.
 func (r *MCEDiscoveryReconciler) cleanupOrphanedCompanions(ctx context.Context) error {
@@ -525,6 +630,9 @@ func (r *MCEDiscoveryReconciler) cleanupOrphanedCompanions(ctx context.Context) 
 	if err := r.client.List(ctx, msaList, client.MatchingLabels{
 		credential.MCEManagedByLabel: credential.MCEManagedByValue,
 	}); err != nil {
+		if meta.IsNoMatchError(err) {
+			return nil // MSA CRD not installed — nothing to clean up
+		}
 		return fmt.Errorf("listing discovery MSAs for orphan cleanup: %w", err)
 	}
 	for i := range msaList.Items {
@@ -621,13 +729,15 @@ func extractAPIServer(mc *unstructured.Unstructured) (string, error) {
 
 // tryRegisterWatch lazily registers a ManagedCluster watch source with the
 // controller. Called after confirming the ManagedCluster API exists.
+// The lock is released before the Watch() call to avoid serializing
+// concurrent reconciles behind a blocking API server call.
 func (r *MCEDiscoveryReconciler) tryRegisterWatch(ctx context.Context) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	if r.watchRegistered || r.ctrlRef == nil || r.cacheRef == nil {
+		r.mu.Unlock()
 		return
 	}
+	r.mu.Unlock()
 
 	mc := &unstructured.Unstructured{}
 	mc.SetGroupVersionKind(managedClusterGVK)
@@ -638,12 +748,20 @@ func (r *MCEDiscoveryReconciler) tryRegisterWatch(ctx context.Context) {
 				return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: singletonKey}}}
 			},
 		),
+		// Only reconcile on spec/label changes and deletions, not on
+		// status heartbeats from the registration agent.
+		predicate.Or[*unstructured.Unstructured](
+			predicate.TypedGenerationChangedPredicate[*unstructured.Unstructured]{},
+			predicate.TypedLabelChangedPredicate[*unstructured.Unstructured]{},
+		),
 	)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to register ManagedCluster watch (will retry)")
 		return
 	}
 
+	r.mu.Lock()
 	r.watchRegistered = true
+	r.mu.Unlock()
 	log.FromContext(ctx).Info("Registered ManagedCluster watch")
 }
 
@@ -670,8 +788,12 @@ func (r *MCEDiscoveryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("mce-discovery").
 		// HubConfig is the primary trigger
 		Watches(&hubv1alpha1.HubConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapHubConfigToSingleton)).
-		// Watch discovery-owned SpokeCluster changes (deletion by other controllers)
-		Watches(&hubv1alpha1.SpokeCluster{}, handler.EnqueueRequestsFromMapFunc(r.mapSpokeClusterToSingleton)).
+		// Watch discovery-owned SpokeCluster spec/deletion changes only.
+		// Status-only updates (e.g. health handler patching Connected) must
+		// not trigger discovery — they don't change generation.
+		Watches(&hubv1alpha1.SpokeCluster{},
+			handler.EnqueueRequestsFromMapFunc(r.mapSpokeClusterToSingleton),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Build(r)
 	if err != nil {
 		return err

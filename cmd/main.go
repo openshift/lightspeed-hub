@@ -114,6 +114,7 @@ func main() {
 	if err := controller.NewMCEDiscoveryReconciler(
 		mgr.GetClient(),
 		mgr.GetAPIReader(),
+		namespace,
 	).SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to create controller", "controller", "MCEDiscovery")
 		os.Exit(1)

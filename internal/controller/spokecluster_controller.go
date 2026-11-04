@@ -38,10 +38,13 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	hubv1alpha1 "github.com/openshift/lightspeed-hub/api/v1alpha1"
@@ -235,7 +238,7 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Set Ready=True only after all checks pass
 	r.setCondition(&sc, conditionTypeReady, metav1.ConditionTrue, reasonManaged, "spoke is managed by hub")
-	if err := r.client.Status().Update(ctx, &sc); err != nil {
+	if err := r.patchStatus(ctx, &sc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("%w: %w", ErrUpdatingStatus, err)
 	}
 
@@ -396,7 +399,7 @@ func (r *SpokeClusterReconciler) unmanageSpoke(ctx context.Context, sc *hubv1alp
 	meta.RemoveStatusCondition(&sc.Status.Conditions, conditionTypeProvisioned)
 	meta.RemoveStatusCondition(&sc.Status.Conditions, conditionTypeAdaptersReady)
 
-	if err := r.client.Status().Update(ctx, sc); err != nil {
+	if err := r.patchStatus(ctx, sc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("%w after unmanaging spoke: %w", ErrUpdatingStatus, err)
 	}
 	return ctrl.Result{}, nil
@@ -407,7 +410,7 @@ func (r *SpokeClusterReconciler) unmanageSpoke(ctx context.Context, sc *hubv1alp
 func (r *SpokeClusterReconciler) failWithCondition(ctx context.Context, sc *hubv1alpha1.SpokeCluster, condType, reason string, err error) (ctrl.Result, error) {
 	r.setCondition(sc, condType, metav1.ConditionFalse, reason, err.Error())
 	r.setCondition(sc, conditionTypeReady, metav1.ConditionFalse, reason, err.Error())
-	if updateErr := r.client.Status().Update(ctx, sc); updateErr != nil {
+	if updateErr := r.patchStatus(ctx, sc); updateErr != nil {
 		log.FromContext(ctx).Error(updateErr, "Failed to update status")
 	}
 	return ctrl.Result{}, err
@@ -416,7 +419,7 @@ func (r *SpokeClusterReconciler) failWithCondition(ctx context.Context, sc *hubv
 func (r *SpokeClusterReconciler) handleConnectivityFailure(ctx context.Context, sc *hubv1alpha1.SpokeCluster, err error) (ctrl.Result, error) {
 	r.setCondition(sc, conditionTypeConnected, metav1.ConditionFalse, reasonConnectionFailed, err.Error())
 	r.setCondition(sc, conditionTypeReady, metav1.ConditionFalse, reasonConnectionFailed, err.Error())
-	if updateErr := r.client.Status().Update(ctx, sc); updateErr != nil {
+	if updateErr := r.patchStatus(ctx, sc); updateErr != nil {
 		return ctrl.Result{}, fmt.Errorf("%w: %w", ErrUpdatingStatus, updateErr)
 	}
 	return ctrl.Result{}, nil
@@ -476,6 +479,49 @@ func (r *SpokeClusterReconciler) setCondition(sc *hubv1alpha1.SpokeCluster, cond
 		Message:            message,
 		ObservedGeneration: sc.Generation,
 	})
+}
+
+// patchStatus re-fetches the SpokeCluster to get the latest resourceVersion,
+// applies each condition from the local copy onto the fresh object, and uses
+// Status().Patch() instead of Status().Update(). This avoids conflicts with
+// the concurrent health handler and preserves conditions the reconciler
+// did not touch (e.g. Connected set by the health handler).
+func (r *SpokeClusterReconciler) patchStatus(ctx context.Context, sc *hubv1alpha1.SpokeCluster) error {
+	var fresh hubv1alpha1.SpokeCluster
+	if err := r.client.Get(ctx, client.ObjectKeyFromObject(sc), &fresh); err != nil {
+		return fmt.Errorf("re-fetching SpokeCluster for status patch: %w", err)
+	}
+	base := fresh.DeepCopy()
+	for _, c := range sc.Status.Conditions {
+		meta.SetStatusCondition(&fresh.Status.Conditions, c)
+	}
+	// Remove conditions that the reconciler explicitly removed (e.g. unmanageSpoke).
+	for _, fc := range fresh.Status.Conditions {
+		if meta.FindStatusCondition(sc.Status.Conditions, fc.Type) == nil {
+			meta.RemoveStatusCondition(&fresh.Status.Conditions, fc.Type)
+		}
+	}
+	// Skip the patch if conditions are unchanged to avoid a resourceVersion
+	// bump that would re-trigger watches and cause a reconcile loop.
+	if conditionsEqual(base.Status.Conditions, fresh.Status.Conditions) {
+		return nil
+	}
+	return r.client.Status().Patch(ctx, &fresh, client.MergeFrom(base))
+}
+
+// conditionsEqual returns true if two condition slices have the same types,
+// statuses, reasons, and messages (ignoring lastTransitionTime).
+func conditionsEqual(a, b []metav1.Condition) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, ac := range a {
+		bc := meta.FindStatusCondition(b, ac.Type)
+		if bc == nil || ac.Status != bc.Status || ac.Reason != bc.Reason || ac.Message != bc.Message {
+			return false
+		}
+	}
+	return true
 }
 
 // reconcileAdapters provisions spoke-side adapter resources, obtains a time-bound SA
@@ -698,7 +744,22 @@ func (r *SpokeClusterReconciler) mapHubConfigToSpokeClusters(ctx context.Context
 func (r *SpokeClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.recorder = mgr.GetEventRecorderFor("spokecluster-controller") //nolint:staticcheck // Using old events API for consistency
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&hubv1alpha1.SpokeCluster{}).
+		// Filter status-only updates to avoid a reconcile loop, but allow
+		// through Connected status changes from the health handler so the
+		// reconciler re-provisions when a spoke recovers connectivity.
+		For(&hubv1alpha1.SpokeCluster{}, builder.WithPredicates(predicate.Or(
+			predicate.GenerationChangedPredicate{},
+			predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
+				oldSC, ok1 := e.ObjectOld.(*hubv1alpha1.SpokeCluster)
+				newSC, ok2 := e.ObjectNew.(*hubv1alpha1.SpokeCluster)
+				if !ok1 || !ok2 {
+					return false
+				}
+				oc := meta.FindStatusCondition(oldSC.Status.Conditions, conditionTypeConnected)
+				nc := meta.FindStatusCondition(newSC.Status.Conditions, conditionTypeConnected)
+				return (oc == nil) != (nc == nil) || (oc != nil && nc != nil && oc.Status != nc.Status)
+			}},
+		))).
 		Watches(&hubv1alpha1.HubConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapHubConfigToSpokeClusters)).
 		Complete(r)
 }
