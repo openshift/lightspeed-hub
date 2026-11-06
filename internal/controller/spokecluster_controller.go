@@ -517,7 +517,7 @@ func conditionsEqual(a, b []metav1.Condition) bool {
 	}
 	for _, ac := range a {
 		bc := meta.FindStatusCondition(b, ac.Type)
-		if bc == nil || ac.Status != bc.Status || ac.Reason != bc.Reason || ac.Message != bc.Message {
+		if bc == nil || ac.Status != bc.Status || ac.Reason != bc.Reason || ac.Message != bc.Message || ac.ObservedGeneration != bc.ObservedGeneration {
 			return false
 		}
 	}
@@ -754,6 +754,11 @@ func (r *SpokeClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				newSC, ok2 := e.ObjectNew.(*hubv1alpha1.SpokeCluster)
 				if !ok1 || !ok2 {
 					return false
+				}
+				// Allow deletion through so the finalizer can run immediately
+				// rather than waiting for an unrelated reconcile trigger.
+				if oldSC.DeletionTimestamp.IsZero() && !newSC.DeletionTimestamp.IsZero() {
+					return true
 				}
 				oc := meta.FindStatusCondition(oldSC.Status.Conditions, conditionTypeConnected)
 				nc := meta.FindStatusCondition(newSC.Status.Conditions, conditionTypeConnected)
