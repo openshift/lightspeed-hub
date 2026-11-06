@@ -1,0 +1,15 @@
+# ConfigMap for MCE cluster-proxy service CA injection.
+# The service-ca operator injects the cluster service CA bundle into
+# ConfigMaps annotated with service.beta.openshift.io/inject-cabundle=true.
+# The MCE credential source reads this CA to verify TLS connections to
+# the cluster-proxy-addon-user reverse proxy Service.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy-ca
+  namespace: system
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+  labels:
+    app.kubernetes.io/name: lightspeed-hub
+    app.kubernetes.io/managed-by: kustomize

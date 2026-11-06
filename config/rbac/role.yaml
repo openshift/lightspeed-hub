@@ -14,6 +14,7 @@ rules:
   - delete
   - get
   - list
+  - watch
 - apiGroups:
   - ""
   resources:
@@ -31,6 +32,14 @@ rules:
   - get
   - list
   - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - agentic.openshift.io
@@ -58,10 +67,27 @@ rules:
   - update
   - watch
 - apiGroups:
+  - authentication.open-cluster-management.io
+  resources:
+  - managedserviceaccounts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cluster.open-cluster-management.io
+  resources:
+  - managedclusters
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - hub.openshift.io
   resources:
   - hubconfigs
-  - spokeclusters
   verbs:
   - get
   - list
@@ -75,6 +101,18 @@ rules:
   - spokeclusters/finalizers
   verbs:
   - update
+- apiGroups:
+  - hub.openshift.io
+  resources:
+  - spokeclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - hub.openshift.io
   resources:
@@ -93,12 +131,31 @@ rules:
   - get
   - list
 - apiGroups:
+  - multicluster.openshift.io
+  resources:
+  - multiclusterengines
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - rbac.authorization.k8s.io
   resources:
   - clusterrolebindings
   - clusterroles
   - rolebindings
   - roles
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - work.open-cluster-management.io
+  resources:
+  - manifestworks
   verbs:
   - create
   - delete

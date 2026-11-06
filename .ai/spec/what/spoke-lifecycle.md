@@ -35,10 +35,10 @@ Full lifecycle of a spoke cluster from registration through decommission.
 11. During registration, the hub operator MUST create a normalized standing kubeconfig Secret on the hub for each spoke. Naming convention: `spoke-kubeconfig-{SpokeCluster.metadata.name}`.
 12. The standing kubeconfig Secret MUST contain a standard kubeconfig file with the spoke API server URL and appropriate credentials. The format is identical regardless of credential source — consumers cannot distinguish between modes.
 13. **Secret mode**: the hub operator reads the admin-provided kubeconfig from the referenced Secret and normalizes it into the standing kubeconfig Secret.
-14. **MCE mode**: the hub operator reads the spoke API server from the ManagedCluster CR, discovers the MCE cluster-proxy service endpoint and CA, obtains a hub-side SA token authorized to use the proxy, and creates the standing kubeconfig with `proxy-url` set to the MCE cluster-proxy endpoint.
+14. **MCE mode**: the hub operator reads a ManagedServiceAccount token from the spoke's hub namespace, discovers the MCE cluster-proxy endpoint and CA, and creates the standing kubeconfig with `server` set to the reverse-proxy endpoint (path-based, not `proxy-url`). Each spoke has its own ManagedServiceAccount and token, parallel to secret mode's per-spoke Secrets.
 15. The standing kubeconfig Secret MUST have an owner reference to the SpokeCluster CR (auto-GC on deletion).
 16. The standing kubeconfig Secret is used by the agentic-operator (to create per-step SAs and get ephemeral tokens on the spoke). Standalone adapters use their own per-spoke credential Secrets (e.g., `spoke-alert-credential-{spoke-name}` for the alerts-adapter).
-17. For MCE mode, the hub operator MUST periodically refresh the standing kubeconfig Secret if the hub SA token has a bounded lifetime.
+17. For MCE mode, the hub operator MUST refresh the standing kubeconfig token on each reconciliation. MCE handles token rotation; spoke-side RBAC for the ManagedServiceAccount SA is a deployment concern.
 
 ### Standing Kubeconfig Format
 
@@ -72,19 +72,18 @@ data:
     current-context: spoke
 ```
 
-**MCE mode (same format, adds proxy-url):**
+**MCE mode (reverse-proxy endpoint as server, no proxy-url):**
 ```yaml
 data:
   kubeconfig: |
     clusters:
     - cluster:
-        server: https://api.prod-rosa-east.example.com:6443
-        proxy-url: https://cluster-proxy.multicluster-engine.svc:443
-        certificate-authority-data: <MCE proxy CA>
+        server: https://cluster-proxy-addon-user.<mce-namespace>.svc:<port>/<managed-cluster-name>
+        certificate-authority-data: <MCE service CA>
       name: spoke
     users:
     - user:
-        token: <hub SA token authorized for MCE proxy>
+        token: <ManagedServiceAccount token>
       name: spoke-user
     contexts:
     - context:
@@ -94,7 +93,7 @@ data:
     current-context: spoke
 ```
 
-The `proxy-url` field is handled transparently by Go's HTTP transport. Consumers (agentic-operator, adapters) use `clientcmd.RESTConfigFromKubeConfig()` and get a `rest.Config` that routes through the proxy automatically.
+The server URL includes the managed-cluster-name path prefix. Consumers use `clientcmd.RESTConfigFromKubeConfig()` and get a `rest.Config` that routes through the proxy automatically.
 
 ### Steady State
 
@@ -112,8 +111,8 @@ The `proxy-url` field is handled transparently by Go's HTTP transport. Consumers
 
 ### Unmanaging
 
-24. [PLANNED: OLS-4787] HubConfig deletion is fleet decommissioning, not unmanagement: gate discovery/enrollment/new work, drain, then delete all registrations (including staged ones) and generated credentials. Preserve source Secrets/static permissions/history; acknowledge before OLS removes runtime/HubConfig. Re-enable requires fresh intent and registration/discovery. GitOps must stop reapplying deleted resources.
-25. [PLANNED: OLS-4781] Registry-mode-change unmanagement instead retains SpokeCluster/source Secret. Gate/drain affected registrations using old-source access, then remove generated resources and report mismatch. Matching spokes continue and a later matching supported mode can reprovision retained registrations. Repeated changes/readoption/discovery must not apply stale cleanup; do not substitute ignore-without-cleanup or require deleting all registrations first.
+24. [PLANNED: OLS-4787] HubConfig deletion is fleet decommissioning, not unmanagement: gate discovery/enrollment/new work, drain, then delete all registrations (including staged ones) and generated credentials. Preserve source Secrets/static permissions/history; acknowledge before OLS removes runtime/HubConfig. Re-enable requires fresh intent and registration/discovery. GitOps must stop reapplying deleted resources. For MCE auto-discovered SpokeCluster CRs (labeled `hub.openshift.io/managed-by: mce-auto-discovery`), the discovery controller deletes them along with their ManagedServiceAccount and ManifestWork companions.
+25. [PLANNED: OLS-4781] Registry-mode-change unmanagement instead retains SpokeCluster/source Secret. Gate/drain affected registrations using old-source access, then remove generated resources and report mismatch. Matching spokes continue and a later matching supported mode can reprovision retained registrations. Repeated changes/readoption/discovery must not apply stale cleanup; do not substitute ignore-without-cleanup or require deleting all registrations first. In the current MCE implementation, mode-change cleanup also revokes ManagedServiceAccount credentials and deletes ManifestWork companions.
 26. [PLANNED: OLS-4781] Mode-change cleanup reuses the shared drain contract and post-drain remote best-effort/hub-error-retry ordering. Selector narrowing, ManagedCluster removal, credential migration, prerequisite configuration deletion (OLS-4782), general uninstall and durable exclusion remain separate scope.
 
 ## Planned Changes
@@ -125,4 +124,5 @@ The `proxy-url` field is handled transparently by Go's HTTP transport. Consumers
 | OLS-4152 | Lightweight spoke health check with separate time handler — rules 18, 18a, 20, 20a |
 | — | Embedded adapter support: install AgenticRun CRD on spoke, start dedicated watcher |
 | — | Spoke-local mode: deploy full agentic stack to spoke during registration |
+| OLS-3954 | MCE credential source: ManagedServiceAccount token via cluster-proxy, auto-discovery from ManagedCluster CRs, reverse-proxy standing kubeconfig — rules 7, 14, 17 |
 | — | Standing kubeconfig token rotation for MCE mode |
