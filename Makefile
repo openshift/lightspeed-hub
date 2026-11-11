@@ -111,11 +111,11 @@ generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and
 
 .PHONY: build
 build: fmt vet ## Build manager binary.
-	go build -o bin/manager ./cmd
+	GOFIPS140=certified go build -o bin/manager ./cmd
 
 .PHONY: run
 run: install vet ## Run the controller locally.
-	go run ./cmd/main.go \
+	GOFIPS140=certified go run ./cmd/ \
 		--namespace=$(OPERATOR_NAMESPACE) \
 		--alerts-adapter-image=$(ALERTS_ADAPTER_IMAGE) \
 		--metrics-bind-address=$(METRICS_BIND_ADDRESS) \
