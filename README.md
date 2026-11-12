@@ -4,6 +4,12 @@ Multicluster hub operator for OpenShift Lightspeed. Runs on a central hub cluste
 
 The hub operator validates spoke connectivity, provisions credentials for standalone adapters, and monitors spoke health — all driven by two CRDs: `HubConfig` (cluster-wide configuration) and `SpokeCluster` (one per registered spoke).
 
+## Baseline reader roles
+
+Configure fleet defaults and additive spoke readers with `spec.agentRBAC`.
+See [Configuring spoke baseline reader roles](docs/agent-rbac.md) for examples,
+reader-policy restrictions, ownership, and standing-credential prerequisites.
+
 ## Prerequisites
 
 The following must be installed on the hub cluster before deploying lightspeed-hub:

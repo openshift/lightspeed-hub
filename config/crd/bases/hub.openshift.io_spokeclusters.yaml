@@ -37,6 +37,22 @@ spec:
             type: object
           spec:
             properties:
+              agentRBAC:
+                properties:
+                  additionalClusterRoles:
+                    description: AdditionalClusterRoles adds existing spoke reader
+                      roles to fleet defaults.
+                    items:
+                      description: ClusterRoleName references an existing ClusterRole
+                        on a spoke.
+                      minLength: 1
+                      pattern: ^[^/%]+$
+                      type: string
+                      x-kubernetes-validations:
+                      - message: must be a valid ClusterRole name
+                        rule: self != '.' && self != '..'
+                    type: array
+                type: object
               apiServer:
                 minLength: 1
                 type: string
