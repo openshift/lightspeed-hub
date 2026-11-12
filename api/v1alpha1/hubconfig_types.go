@@ -27,7 +27,23 @@ const (
 	ClusterRegistryModeMCE    ClusterRegistryMode = "mce"
 )
 
+// ClusterRoleName references an existing ClusterRole on a spoke.
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:Pattern=`^[^/%]+$`
+// +kubebuilder:validation:XValidation:rule="self != '.' && self != '..'",message="must be a valid ClusterRole name"
+type ClusterRoleName string
+
+type FleetAgentRBAC struct {
+	// DefaultClusterRoles replaces the built-in reader roles when specified.
+	// An explicit empty list disables fleet defaults.
+	// +optional
+	DefaultClusterRoles *[]ClusterRoleName `json:"defaultClusterRoles,omitempty"`
+}
+
 type HubConfigSpec struct {
+	// +optional
+	AgentRBAC *FleetAgentRBAC `json:"agentRBAC,omitempty"`
+
 	// +kubebuilder:validation:Enum=secret;mce
 	ClusterRegistryMode ClusterRegistryMode `json:"clusterRegistryMode"`
 
