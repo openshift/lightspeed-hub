@@ -28,7 +28,7 @@ RUN CGO_ENABLED=0 GOFIPS140=certified GOAMD64=v2 GOOS=${TARGETOS:-linux} GOARCH=
 # Verify manager targets at most x86-64-v2 (no-op on non-amd64)
 RUN go build -o check-isa-level ./cmd/check-isa-level && ./check-isa-level ./manager
 
-FROM registry.access.redhat.com/ubi9-micro:9.9-1793867126@sha256:b59ac4f291d86027c2681f7a7b1cbf7448972fc55a6cb8e25cab5aa5eef5ce5f
+FROM registry.access.redhat.com/ubi9-micro:9.9-1794478307@sha256:dbd325b96bcd432dd42816d31412bdf1dc0fb973b79ed310344bc23c76c068db
 
 WORKDIR /
 COPY --from=builder /workspace/manager .
