@@ -76,6 +76,7 @@ spec:
 
 | Field | Required | Description |
 |---|---|---|
+| `agentRBAC.defaultClusterRoles` | No | Existing spoke reader ClusterRoles. Omitted: cluster-reader and cluster-monitoring-view; explicit list replaces defaults; empty list means none. |
 | `clusterRegistryMode` | Yes | How spoke clusters are registered and credentials managed. `secret`: manual SpokeCluster CRs with stored kubeconfigs. `mce`: auto-discover from MCE ManagedCluster CRs. |
 | `mce.selector.matchLabels` | No; applies in mce mode | Label selector filtering which ManagedCluster CRs become spokes. Only ManagedClusters matching these labels are auto-discovered. When omitted, all ManagedClusters are included. |
 
@@ -83,6 +84,7 @@ spec:
 
 20. CRD validation MUST require `metadata.name` equals `cluster` (singleton pattern, same as ApprovalPolicy and AgenticOLSConfig).
 21. `clusterRegistryMode` MUST be one of `secret` or `mce`.
+21a. Agent RBAC lists require valid nonempty ClusterRole object names. Fleet omission and explicit emptiness MUST remain distinct. Validate current effective role rules: only get/list/watch, no core Secret/RBAC access, and no wildcard bypasses. Under parent ADR 0048, only the case-sensitive ClusterRole names `cluster-reader` and `cluster-monitoring-view` bypass permission-content validation, even after administrator edits or aggregation changes. Custom fleet defaults are not exempt. Read all roles for existence/accessibility; missing roles, unsafe non-exempt roles, and API failures remain provisioning errors. Referenced role definitions and standing privileges are not managed by this feature. Exempt permissions apply in every remote phase independently of execution approval; local validation remains unchanged. See `spoke-lifecycle.md` rules 5–6 and 10.
 
 ### HubConfig Lifecycle
 
@@ -152,6 +154,7 @@ status:
 
 | Field | Required | Description |
 |---|---|---|
+| `agentRBAC.additionalClusterRoles` | No | Existing spoke reader ClusterRoles added to fleet defaults; duplicates are deduplicated and MCE discovery preserves additions. |
 | `apiServer` | Yes | Spoke cluster's kube-api server URL |
 | `credentialSource` | Yes | Exactly one of: `secret`, `mce`. Must match HubConfig `clusterRegistryMode`. |
 | `credentialSource.secret.name` | When mode=secret | Name of the K8s Secret containing the spoke kubeconfig |
