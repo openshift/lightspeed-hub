@@ -75,6 +75,10 @@ test: fmt-check vet setup-envtest ## Run unit tests.
 	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 		go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out -count=1
 
+.PHONY: codecov
+codecov: ## Upload the unit-test coverage report (cover.out) to codecov.io.
+	./scripts/codecov.sh cover.out unit
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter.
 	$(GOLANGCI_LINT) run
