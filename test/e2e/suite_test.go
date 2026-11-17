@@ -19,9 +19,7 @@ limitations under the License.
 package e2e_test
 
 import (
-	"context"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -35,12 +33,7 @@ import (
 	hubv1alpha1 "github.com/openshift/lightspeed-hub/api/v1alpha1"
 )
 
-const operatorNamespace = "openshift-lightspeed"
-
 var (
-	ctx = context.Background()
-
-	hubClient    client.Client
 	spoke1Client client.Client
 	spoke2Client client.Client
 
@@ -81,22 +74,6 @@ var _ = BeforeSuite(func() {
 	spoke2APIServer = mustExtractServer(spoke2InternalKubeconfig)
 
 })
-
-func requireEnv(key string) string {
-	v := os.Getenv(key)
-	Expect(v).NotTo(BeEmpty(), "required env var %s is not set", key)
-	return v
-}
-
-func mustBuildClient(scheme *runtime.Scheme, kubeconfigPath string) client.Client {
-	absPath, err := filepath.Abs(kubeconfigPath)
-	Expect(err).NotTo(HaveOccurred())
-	cfg, err := clientcmd.BuildConfigFromFlags("", absPath)
-	Expect(err).NotTo(HaveOccurred(), "building REST config from %s", kubeconfigPath)
-	c, err := client.New(cfg, client.Options{Scheme: scheme})
-	Expect(err).NotTo(HaveOccurred(), "creating client from %s", kubeconfigPath)
-	return c
-}
 
 func mustExtractServer(kubeconfigBytes []byte) string {
 	apiCfg, err := clientcmd.Load(kubeconfigBytes)

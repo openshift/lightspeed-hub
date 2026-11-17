@@ -1,0 +1,321 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: lightspeed-hub-alert-pipeline-e2e
+spec:
+  description: >-
+    Alert pipeline e2e for the lightspeed-hub SNAPSHOT image on an ephemeral AWS HyperShift
+    OpenShift 5 cluster. The cluster acts as hub and spoke with ACM as the inventory:
+    hack/alert-pipeline-setup.sh installs ACM, imports the hub as ManagedCluster hub-self, deploys
+    the agentic operator and the hub, configures OpenAI, then make alert-pipeline-e2e runs the
+    alert -> AgenticRun -> Analysis/Execution/Verification flow. Artifacts are published even if
+    the setup or the tests fail.
+  params:
+  - name: SNAPSHOT
+    description: The JSON string representing the snapshot of the application under test.
+    type: string
+  - name: test-name
+    description: The name of the test corresponding to a defined Konflux integration test.
+    default: hub-alert-pipeline-e2e
+    type: string
+  - name: component-name
+    description: lightspeed-hub component in the Konflux snapshot.
+    default: lightspeed-hub
+    type: string
+  - name: openshift-version-prefix
+    description: OpenShift minor version to provision. The alert flow requires OpenShift 5.
+    default: '5.0'
+    type: string
+  - name: llm-model
+    description: OpenAI model for Agent/default.
+    default: gpt-6.1-sol
+    type: string
+  - name: agentic-operator-ref
+    description: Git ref of openshift/lightspeed-agentic-operator whose manifests are deployed.
+    default: main
+    type: string
+  tasks:
+  - name: get-snapshot-component
+    params:
+    - name: SNAPSHOT
+      value: $(params.SNAPSHOT)
+    - name: component-name
+      value: $(params.component-name)
+    taskSpec:
+      params:
+      - name: SNAPSHOT
+        type: string
+      - name: component-name
+        type: string
+      results:
+      - name: commit
+        value: $(steps.extract.results.commit)
+      - name: hub-image
+        value: $(steps.extract.results.hub-image)
+      steps:
+      - name: extract
+        image: quay.io/konflux-qe-incubator/konflux-qe-tools:latest
+        env:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+        - name: COMPONENT_NAME
+          value: $(params.component-name)
+        results:
+        - name: commit
+          type: string
+        - name: hub-image
+          type: string
+        script: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          component="$(jq -ce --arg name "$COMPONENT_NAME" '
+            [.components[] | select(.name == $name)] |
+            if length == 1 then .[0] else error("Expected exactly one lightspeed-hub component") end |
+            if (.containerImage | type) != "string" then error("Missing hub image")
+            elif (.containerImage | length) == 0 then error("Empty hub image")
+            elif (.source.git.revision | type) != "string" then error("Missing hub revision")
+            elif (.source.git.revision | test("^[0-9a-fA-F]{40}$") | not) then error("Expected a full commit SHA")
+            else . end' <<< "$SNAPSHOT")"
+          printf '%s' "$(jq -r '.containerImage' <<< "$component")" > $(step.results.hub-image.path)
+          printf '%s' "$(jq -r '.source.git.revision' <<< "$component")" > $(step.results.commit.path)
+  - name: provision-ephemeral-cluster
+    taskRef:
+      resolver: git
+      params:
+      - name: url
+        value: https://github.com/openshift/konflux-tasks
+      - name: revision
+        value: main
+      - name: pathInRepo
+        value: tasks/provision-ephemeral-cluster/0.1/provision-ephemeral-cluster.yaml
+    params:
+    - name: ownerName
+      value: $(context.pipelineRun.name)
+    - name: ownerUid
+      value: $(context.pipelineRun.uid)
+    - name: workflow
+      value: hypershift-hostedcluster-workflow
+    - name: clusterProfile
+      value: aws-konflux-prod
+    - name: env
+      value: '{"COMPUTE_NODE_TYPE": "m5.2xlarge", "HYPERSHIFT_NODE_COUNT": "3", "HOSTED_MANAGEMENT_CLUSTER": "hosted-mgmt2"}'
+    - name: releases
+      value: '{"latest":{"release":{"channel":"stable","version":"$(params.openshift-version-prefix)","architecture":"multi"}}}'
+    runAfter:
+    - get-snapshot-component
+  - name: alert-pipeline-e2e
+    description: Check out the hub snapshot commit, prepare the cluster, then run the alert pipeline e2e test.
+    params:
+    - name: hub-image
+      value: $(tasks.get-snapshot-component.results.hub-image)
+    - name: commit
+      value: $(tasks.get-snapshot-component.results.commit)
+    - name: llm-model
+      value: $(params.llm-model)
+    - name: agentic-operator-ref
+      value: $(params.agentic-operator-ref)
+    - name: artifact-run-name
+      value: $(context.pipelineRun.name)
+    - name: clusterCredentialsSecretRef
+      value: $(tasks.provision-ephemeral-cluster.results.secretRef)
+    runAfter:
+    - provision-ephemeral-cluster
+    taskSpec:
+      params:
+      - name: hub-image
+        type: string
+      - name: commit
+        type: string
+      - name: llm-model
+        type: string
+      - name: agentic-operator-ref
+        type: string
+      - name: artifact-run-name
+        type: string
+      - name: clusterCredentialsSecretRef
+        type: string
+      volumes:
+      - name: openai-token
+        secret:
+          secretName: openai
+      - name: ols-konflux-artifacts-bot-creds
+        secret:
+          secretName: ols-konflux-artifacts-bot
+      - name: cluster-credentials
+        secret:
+          secretName: $(params.clusterCredentialsSecretRef)
+      steps:
+      - name: get-oc
+        # The go-toolset image used below has Go, git, make and curl but no oc. Steps share
+        # /workspace, so copy the client from the OpenShift CLI image. kubectl is the same
+        # binary (used by the agentic operator's make deploy).
+        image: registry.redhat.io/openshift4/ose-cli-rhel9:v4.22
+        script: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          mkdir -p /workspace/bin
+          cp "$(command -v oc)" /workspace/bin/oc
+          cp "$(command -v oc)" /workspace/bin/kubectl
+          chmod 0755 /workspace/bin/oc /workspace/bin/kubectl
+          /workspace/bin/oc version --client
+      - name: setup-and-test
+        onError: continue
+        # Same builder image as the hub Dockerfile: Go satisfies go.mod without a toolchain download.
+        image: registry.redhat.io/ubi9/go-toolset:9.9-1794518352
+        resources:
+          requests:
+            cpu: '1'
+            memory: 2Gi
+          limits:
+            memory: 8Gi
+        volumeMounts:
+        - name: openai-token
+          mountPath: /var/run/openai
+        - name: cluster-credentials
+          mountPath: /credentials
+        env:
+        - name: HUB_IMAGE
+          value: $(params.hub-image)
+        - name: HUB_COMMIT_SHA
+          value: $(params.commit)
+        - name: LLM_MODEL
+          value: $(params.llm-model)
+        - name: AGENTIC_OPERATOR_REF
+          value: $(params.agentic-operator-ref)
+        - name: OPENAI_PROVIDER_KEY_PATH
+          value: /var/run/openai/token
+        - name: ARTIFACT_DIR
+          value: /workspace/artifacts
+        - name: HOME
+          value: /workspace/home
+        - name: GOPATH
+          value: /workspace/go
+        - name: GOCACHE
+          value: /workspace/go-cache
+        - name: GOTOOLCHAIN
+          value: local
+        script: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          export PATH="/workspace/bin:${PATH}"
+          mkdir -p "${ARTIFACT_DIR}" "${HOME}" "${GOPATH}" "${GOCACHE}"
+          go version
+
+          cp /credentials/kubeconfig /workspace/kubeconfig
+          chmod 600 /workspace/kubeconfig
+          export KUBECONFIG=/workspace/kubeconfig
+
+          cd /workspace
+          git init -q lightspeed-hub
+          cd lightspeed-hub
+          git remote add origin https://github.com/openshift/lightspeed-hub.git
+          git fetch -q --depth=1 origin "${HUB_COMMIT_SHA}"
+          git checkout -q --detach FETCH_HEAD
+          git log -1 --oneline
+
+          OPENAI_API_KEY="$(tr -d '\r\n' < "${OPENAI_PROVIDER_KEY_PATH}")"
+          export OPENAI_API_KEY
+
+          echo "=== make alert-pipeline-setup ==="
+          make alert-pipeline-setup 2>&1 | tee "${ARTIFACT_DIR}/alert-pipeline-setup.log"
+
+          echo "=== make alert-pipeline-e2e ==="
+          export MC_HUB_KUBECONFIG="${KUBECONFIG}"
+          export MC_SPOKE_KUBECONFIG="${KUBECONFIG}"
+          export MC_SPOKE_NAME=hub-self
+          make alert-pipeline-e2e 2>&1 | tee "${ARTIFACT_DIR}/alert-pipeline-e2e.log"
+      - name: gather-cluster-resources
+        onError: continue
+        image: registry.redhat.io/openshift4/ose-cli-rhel9:v4.22
+        volumeMounts:
+        - name: cluster-credentials
+          mountPath: /credentials
+        env:
+        - name: KUBECONFIG
+          value: /credentials/kubeconfig
+        - name: ARTIFACT_DIR
+          value: /workspace/artifacts
+        script: |
+          #!/usr/bin/env bash
+          # Best effort: no Secrets are collected.
+          set -uo pipefail
+          out="${ARTIFACT_DIR}/cluster"
+          mkdir -p "${out}"
+          dump() { local file="$1"; shift; "$@" > "${out}/${file}" 2>&1 || true; }
+          dump clusterversion.yaml        oc get clusterversion -o yaml
+          dump nodes.txt                  oc get nodes -o wide
+          dump not-running-pods.txt       oc get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded -o wide
+          dump multiclusterhub.yaml       oc get multiclusterhub -A -o yaml
+          dump multiclusterengine.yaml    oc get multiclusterengine -o yaml
+          dump managedclusters.yaml       oc get managedcluster -o yaml
+          dump managedclusteraddons.txt   oc get managedclusteraddon -A
+          dump hubconfig.yaml             oc get hubconfig -o yaml
+          dump spokeclusters.yaml         oc get spokecluster -o yaml
+          dump agenticruns.yaml           oc get agenticrun -A -o yaml
+          dump agents.yaml                oc get agent,llmprovider,approvalpolicy -o yaml
+          dump lightspeed-pods.txt        oc get pods -n openshift-lightspeed -o wide
+          dump lightspeed-events.txt      oc get events -n openshift-lightspeed --sort-by=.lastTimestamp
+          dump adapter-config.yaml        oc get configmap hub-alerts-adapter-config -n openshift-lightspeed -o yaml
+          dump hub-controller.log         oc logs -n openshift-lightspeed deploy/lightspeed-hub-controller-manager --all-containers
+          dump alerts-adapter.log         oc logs -n openshift-lightspeed deploy/lightspeed-hub-alerts-adapter --all-containers
+          dump agentic-operator.log       oc logs -n openshift-lightspeed deploy/controller-manager --all-containers
+          for ns in $(oc get ns -o name 2>/dev/null | grep '^namespace/ls-alert-e2e-' | cut -d/ -f2); do
+            dump "test-namespace-${ns}.yaml" oc get all,configmap,events,prometheusrule -n "${ns}" -o yaml
+          done
+          ls -la "${out}"
+      - name: list-artifacts
+        onError: continue
+        image: quay.io/konflux-qe-incubator/konflux-qe-tools:latest
+        workingDir: /workspace
+        script: |
+          #!/bin/bash
+          ls -laR /workspace/artifacts
+      - name: push-artifacts
+        timeout: 15m
+        onError: continue
+        ref:
+          resolver: git
+          params:
+          - name: url
+            value: https://github.com/konflux-ci/tekton-integration-catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: stepactions/secure-push-oci/0.1/secure-push-oci.yaml
+        params:
+        - name: workdir-path
+          value: /workspace/artifacts
+        - name: oci-ref
+          value: quay.io/openshift-lightspeed/ols-operator-artifacts:hub-alert-e2e-$(params.artifact-run-name)-$(params.commit)
+        - name: credentials-volume-name
+          value: ols-konflux-artifacts-bot-creds
+      - name: fail-if-any-step-failed
+        ref:
+          resolver: git
+          params:
+          - name: url
+            value: https://github.com/konflux-ci/tekton-integration-catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: stepactions/fail-if-any-step-failed/0.1/fail-if-any-step-failed.yaml
+  finally:
+  - name: export-logs-for-retention
+    taskRef:
+      resolver: git
+      params:
+      - name: url
+        value: https://github.com/konflux-ci/tekton-integration-catalog.git
+      - name: revision
+        value: main
+      - name: pathInRepo
+        value: tasks/export-logs/0.1/export-logs-to-quay.yaml
+    params:
+    - name: pipeline-run-name
+      value: $(context.pipelineRun.name)
+    - name: namespace
+      value: $(context.pipelineRun.namespace)
+    - name: quay-repo
+      value: quay.io/openshift-lightspeed/ols-operator-artifacts
+    - name: artifact-credentials-secret
+      value: ols-konflux-artifacts-bot
