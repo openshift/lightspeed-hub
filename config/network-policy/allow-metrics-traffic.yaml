@@ -12,7 +12,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      control-plane: controller-manager
+      control-plane: hub-controller-manager
       app.kubernetes.io/name: lightspeed-hub
   policyTypes:
     - Ingress

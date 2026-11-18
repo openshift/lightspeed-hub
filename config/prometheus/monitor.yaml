@@ -3,7 +3,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   labels:
-    control-plane: controller-manager
+    control-plane: hub-controller-manager
     app.kubernetes.io/name: lightspeed-hub
     app.kubernetes.io/managed-by: kustomize
   name: controller-manager-metrics-monitor
@@ -23,5 +23,5 @@ spec:
         insecureSkipVerify: true
   selector:
     matchLabels:
-      control-plane: controller-manager
+      control-plane: hub-controller-manager
       app.kubernetes.io/name: lightspeed-hub
