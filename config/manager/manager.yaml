@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   labels:
-    control-plane: controller-manager
+    control-plane: hub-controller-manager
     app.kubernetes.io/name: lightspeed-hub
     app.kubernetes.io/managed-by: kustomize
   name: system
@@ -13,13 +13,13 @@ metadata:
   name: controller-manager
   namespace: system
   labels:
-    control-plane: controller-manager
+    control-plane: hub-controller-manager
     app.kubernetes.io/name: lightspeed-hub
     app.kubernetes.io/managed-by: kustomize
 spec:
   selector:
     matchLabels:
-      control-plane: controller-manager
+      control-plane: hub-controller-manager
       app.kubernetes.io/name: lightspeed-hub
   replicas: 1
   template:
@@ -27,7 +27,7 @@ spec:
       annotations:
         kubectl.kubernetes.io/default-container: manager
       labels:
-        control-plane: controller-manager
+        control-plane: hub-controller-manager
         app.kubernetes.io/name: lightspeed-hub
     spec:
       # TODO(user): Uncomment the following code to configure the nodeAffinity expression

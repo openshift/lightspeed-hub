@@ -89,8 +89,8 @@ make install
 IMG=quay.io/hasun/lightspeed-hub-operator:latest make deploy
 
 # Verify operator is running
-kubectl get pods -n openshift-lightspeed -l control-plane=controller-manager
-kubectl logs -n openshift-lightspeed -l control-plane=controller-manager --tail=10
+kubectl get pods -n openshift-lightspeed -l control-plane=hub-controller-manager
+kubectl logs -n openshift-lightspeed -l control-plane=hub-controller-manager --tail=10
 ```
 
 ## Test Registration
@@ -199,7 +199,7 @@ kubectl auth can-i delete pods \
 Wait 5+ minutes and check that the controller re-reconciles:
 
 ```bash
-kubectl logs -n openshift-lightspeed -l control-plane=controller-manager --tail=10
+kubectl logs -n openshift-lightspeed -l control-plane=hub-controller-manager --tail=10
 # Expect periodic "Successfully reconciled spoke" log entries
 ```
 
@@ -219,7 +219,7 @@ kubectl get clusterrolebinding lightspeed-hub:cluster-monitoring-view  # NotFoun
 kubectl get secret spoke-kubeconfig-self-spoke -n openshift-lightspeed  # NotFound
 
 # Check operator logs for decommission
-kubectl logs -n openshift-lightspeed -l control-plane=controller-manager --tail=5
+kubectl logs -n openshift-lightspeed -l control-plane=hub-controller-manager --tail=5
 # Expect: "Deprovisioning spoke" and "Removed finalizer, spoke cleanup complete"
 ```
 
