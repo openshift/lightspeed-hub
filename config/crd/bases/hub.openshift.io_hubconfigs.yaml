@@ -37,6 +37,23 @@ spec:
             type: object
           spec:
             properties:
+              agentRBAC:
+                properties:
+                  defaultClusterRoles:
+                    description: |-
+                      DefaultClusterRoles replaces the built-in reader roles when specified.
+                      An explicit empty list disables fleet defaults.
+                    items:
+                      description: ClusterRoleName references an existing ClusterRole
+                        on a spoke.
+                      minLength: 1
+                      pattern: ^[^/%]+$
+                      type: string
+                      x-kubernetes-validations:
+                      - message: must be a valid ClusterRole name
+                        rule: self != '.' && self != '..'
+                    type: array
+                type: object
               clusterRegistryMode:
                 enum:
                 - secret

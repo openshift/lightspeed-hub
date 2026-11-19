@@ -25,6 +25,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -102,6 +103,14 @@ func spokeIngressCAConfigMap() *corev1.ConfigMap {
 }
 
 func newReconcilerWithAdapterSupport(hubClient client.Client, credSource *fakeCredentialSource, spokeClient client.Client, ns string) *controller.SpokeClusterReconciler {
+	if spokeClient != nil {
+		for _, name := range []string{"cluster-reader", "cluster-monitoring-view"} {
+			role := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: name}, Rules: []rbacv1.PolicyRule{{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"get", "list", "watch"}}}}
+			if err := spokeClient.Create(context.Background(), role); err != nil && !apierrors.IsAlreadyExists(err) {
+				panic(err)
+			}
+		}
+	}
 	reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, ns)
 	reconciler.NewSpokeClient = func(cfg *rest.Config) (client.Client, error) {
 		return spokeClient, nil
@@ -220,13 +229,7 @@ var _ = Describe("SpokeClusterReconciler", func() {
 				},
 			}
 
-			reconciler := controller.NewSpokeClusterReconciler(hubClient, newTestScheme(), credSource, testNamespace)
-			reconciler.NewSpokeClient = func(cfg *rest.Config) (client.Client, error) {
-				return spokeClient, nil
-			}
-			reconciler.CheckConnectivity = func(cfg *rest.Config) error {
-				return nil
-			}
+			reconciler := newReconcilerWithAdapterSupport(hubClient, credSource, spokeClient, testNamespace)
 			reconciler.DiscoverAlertmanagerURL = func(ctx context.Context, spokeClient client.Client) (string, error) {
 				return "https://alertmanager-main-openshift-monitoring.apps.spoke.example.com", nil
 			}

@@ -23,163 +23,55 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
-	// ManagedNamespace is the namespace created on spoke clusters for hub-managed resources
+	// ManagedNamespace isolates hub-managed resources from a spoke-local installation.
 	ManagedNamespace = "openshift-lightspeed-managed"
-
-	// ServiceAccountName is the ServiceAccount name for the lightspeed agent
+	// ServiceAccountName is the reader discovery seed, not a sandbox identity.
 	ServiceAccountName = "lightspeed-agent"
-
-	// ClusterRoleBindingClusterReader is the ClusterRoleBinding name for cluster-reader
+	// ClusterRoleBindingClusterReader preserves the built-in reader binding name.
 	ClusterRoleBindingClusterReader = "lightspeed-hub:cluster-reader"
-
-	// ClusterRoleBindingMonitoringView is the ClusterRoleBinding name for cluster-monitoring-view
+	// ClusterRoleBindingMonitoringView preserves the built-in monitoring binding name.
 	ClusterRoleBindingMonitoringView = "lightspeed-hub:cluster-monitoring-view"
 )
 
-// Provision creates the required resources on the spoke cluster.
-// It is idempotent and handles AlreadyExists errors.
-func Provision(ctx context.Context, spokeClient client.Client) error {
-	// 1. Create namespace
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: ManagedNamespace,
-		},
+// Provision creates the seed namespace/SA and converges owned baseline bindings.
+func Provision(ctx context.Context, spokeClient client.Client, uid types.UID, roles []string) error {
+	if uid == "" {
+		return fmt.Errorf("baseline reader ownership requires a SpokeCluster UID")
 	}
-	if err := spokeClient.Create(ctx, ns); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("%w: %w", ErrCreatingNamespace, err)
-		}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ManagedNamespace}}
+	if err := spokeClient.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("%w: %w", ErrCreatingNamespace, err)
 	}
-
-	// 2. Create ServiceAccount
-	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ServiceAccountName,
-			Namespace: ManagedNamespace,
-		},
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: ServiceAccountName, Namespace: ManagedNamespace}}
+	if err := spokeClient.Create(ctx, sa); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("%w: %w", ErrCreatingServiceAccount, err)
 	}
-	if err := spokeClient.Create(ctx, sa); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("%w: %w", ErrCreatingServiceAccount, err)
-		}
-	}
-
-	// 3. Create ClusterRoleBinding for cluster-reader
-	crbReader := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: ClusterRoleBindingClusterReader,
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: rbacv1.GroupName,
-			Kind:     "ClusterRole",
-			Name:     "cluster-reader",
-		},
-		Subjects: []rbacv1.Subject{
-			{
-				Kind:      "ServiceAccount",
-				Name:      ServiceAccountName,
-				Namespace: ManagedNamespace,
-			},
-		},
-	}
-	if err := spokeClient.Create(ctx, crbReader); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("%w cluster-reader: %w", ErrCreatingClusterRoleBinding, err)
-		}
-	}
-
-	// 4. Create ClusterRoleBinding for cluster-monitoring-view
-	crbMonitoring := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: ClusterRoleBindingMonitoringView,
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: rbacv1.GroupName,
-			Kind:     "ClusterRole",
-			Name:     "cluster-monitoring-view",
-		},
-		Subjects: []rbacv1.Subject{
-			{
-				Kind:      "ServiceAccount",
-				Name:      ServiceAccountName,
-				Namespace: ManagedNamespace,
-			},
-		},
-	}
-	if err := spokeClient.Create(ctx, crbMonitoring); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("%w cluster-monitoring-view: %w", ErrCreatingClusterRoleBinding, err)
-		}
-	}
-
-	return nil
+	return reconcileReaderBindings(ctx, spokeClient, uid, roles)
 }
 
-// Deprovision deletes the resources from the spoke cluster in reverse order.
-// It is best-effort: all resources are attempted regardless of individual failures,
-// NotFound errors are ignored, and the aggregated error (if any) is returned to the caller.
-func Deprovision(ctx context.Context, spokeClient client.Client, log logr.Logger) error {
+// Deprovision removes only this registration's baseline bindings, then the seed
+// resources. Remote cleanup remains best-effort and reports aggregated errors.
+func Deprovision(ctx context.Context, spokeClient client.Client, log logr.Logger, uid types.UID) error {
 	var errs []error
-
-	// 1. Delete ClusterRoleBinding cluster-monitoring-view
-	crbMonitoring := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: ClusterRoleBindingMonitoringView,
-		},
+	if err := removeReaderBindings(ctx, spokeClient, uid, nil); err != nil {
+		log.Error(err, "failed to delete baseline bindings")
+		errs = append(errs, err)
 	}
-	if err := spokeClient.Delete(ctx, crbMonitoring); err != nil {
-		if !apierrors.IsNotFound(err) {
-			log.Error(err, "failed to delete ClusterRoleBinding", "name", ClusterRoleBindingMonitoringView)
+	for _, obj := range []client.Object{
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: ServiceAccountName, Namespace: ManagedNamespace}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ManagedNamespace}},
+	} {
+		if err := spokeClient.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+			log.Error(err, "failed to delete seed resource", "name", obj.GetName())
 			errs = append(errs, err)
 		}
 	}
-
-	// 2. Delete ClusterRoleBinding cluster-reader
-	crbReader := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: ClusterRoleBindingClusterReader,
-		},
-	}
-	if err := spokeClient.Delete(ctx, crbReader); err != nil {
-		if !apierrors.IsNotFound(err) {
-			log.Error(err, "failed to delete ClusterRoleBinding", "name", ClusterRoleBindingClusterReader)
-			errs = append(errs, err)
-		}
-	}
-
-	// 3. Delete ServiceAccount
-	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ServiceAccountName,
-			Namespace: ManagedNamespace,
-		},
-	}
-	if err := spokeClient.Delete(ctx, sa); err != nil {
-		if !apierrors.IsNotFound(err) {
-			log.Error(err, "failed to delete ServiceAccount", "name", ServiceAccountName, "namespace", ManagedNamespace)
-			errs = append(errs, err)
-		}
-	}
-
-	// 4. Delete Namespace
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: ManagedNamespace,
-		},
-	}
-	if err := spokeClient.Delete(ctx, ns); err != nil {
-		if !apierrors.IsNotFound(err) {
-			log.Error(err, "failed to delete Namespace", "name", ManagedNamespace)
-			errs = append(errs, err)
-		}
-	}
-
 	return errors.Join(errs...)
 }

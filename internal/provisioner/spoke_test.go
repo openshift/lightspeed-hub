@@ -34,6 +34,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
+func readerTestObjects(objects []client.Object) []client.Object {
+	for _, obj := range objects {
+		if binding, ok := obj.(*rbacv1.ClusterRoleBinding); ok {
+			binding.Labels = readerLabels("test-uid")
+		}
+	}
+	for _, name := range []string{"cluster-reader", "cluster-monitoring-view"} {
+		objects = append(objects, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: name}, Rules: []rbacv1.PolicyRule{{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"get", "list", "watch"}}}})
+	}
+	return objects
+}
+
 func TestProvision(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
@@ -128,10 +140,10 @@ func TestProvision(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := fake.NewClientBuilder().
 				WithScheme(scheme).
-				WithObjects(tt.existingObjs...).
+				WithObjects(readerTestObjects(tt.existingObjs)...).
 				Build()
 
-			err := Provision(context.Background(), c)
+			err := Provision(context.Background(), c, "test-uid", []string{"cluster-reader", "cluster-monitoring-view"})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Provision() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -228,8 +240,9 @@ func TestProvision_SentinelErrors(t *testing.T) {
 			c := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithInterceptorFuncs(tt.interceptFn).
+				WithObjects(readerTestObjects(nil)...).
 				Build()
-			err := Provision(context.Background(), c)
+			err := Provision(context.Background(), c, "test-uid", []string{"cluster-reader", "cluster-monitoring-view"})
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -330,11 +343,11 @@ func TestDeprovision(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := fake.NewClientBuilder().
 				WithScheme(scheme).
-				WithObjects(tt.existingObjs...).
+				WithObjects(readerTestObjects(tt.existingObjs)...).
 				Build()
 
 			log := logr.Discard()
-			if err := Deprovision(context.Background(), c, log); err != nil {
+			if err := Deprovision(context.Background(), c, log, "test-uid"); err != nil {
 				t.Errorf("Deprovision() unexpected error: %v", err)
 			}
 
@@ -430,7 +443,7 @@ func TestDeprovision_ReturnsErrors(t *testing.T) {
 				Build()
 
 			log := logr.Discard()
-			err := Deprovision(context.Background(), c, log)
+			err := Deprovision(context.Background(), c, log, "test-uid")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Deprovision() error = %v, wantErr %v", err, tt.wantErr)
 			}
