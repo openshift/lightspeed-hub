@@ -103,6 +103,14 @@ mc-e2e: build ## Run T1 multicluster e2e tests using kind (provisions hub + 2 sp
 mc-product-e2e: ## Run T2 multicluster e2e tests (expects MC_HUB_KUBECONFIG and MC_SPOKE_* env vars set by CI).
 	go test -v -tags mc_product_e2e -count=1 ./test/e2e/... -timeout 30m
 
+.PHONY: alert-pipeline-setup
+alert-pipeline-setup: ## Prepare a fresh OCP 5 cluster for the alert pipeline e2e test (needs KUBECONFIG, HUB_IMAGE, OPENAI_API_KEY; see hack/alert-pipeline-setup.sh).
+	hack/alert-pipeline-setup.sh
+
+.PHONY: alert-pipeline-e2e
+alert-pipeline-e2e: ## Run the alert pipeline e2e test on OCP (expects MC_HUB_KUBECONFIG, MC_SPOKE_KUBECONFIG, MC_SPOKE_NAME; SKIP_LLM_STAGES=true for Phase 1 only).
+	go test -v -tags alert_pipeline_e2e -count=1 ./test/e2e/... -timeout 60m
+
 .PHONY: manifests
 manifests: controller-gen ## Regenerate CRD YAML and RBAC ClusterRole.
 	$(CONTROLLER_GEN) rbac:roleName=hub-operator-manager-role crd paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
