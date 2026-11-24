@@ -82,11 +82,16 @@ writes or Secret/RBAC access to every remote phase independently of execution ap
 The standing kubeconfig identity is distinct from the seed and per-step identities.
 It needs permission to read referenced ClusterRoles, list/get/create/update/delete
 baseline ClusterRoleBindings, and grant the referenced roles under Kubernetes
-bind/escalation checks, in addition to existing provisioning permissions. This
-feature does not automatically widen standing credentials or grant cluster-admin.
-The existing MCE provisioning role lacks binding list/update permissions; arrange
-appropriate administrator-managed access before relying on this feature in MCE
-mode. Do not edit the discovery-owned ManifestWork: discovery reconciles its spec.
+bind/escalation checks, in addition to existing provisioning permissions.
+
+In Secret mode, the administrator-supplied kubeconfig must already hold these
+permissions; the hub does not widen it or grant cluster-admin. In MCE mode, the
+discovery-generated `lightspeed-hub-spoke-provisioner` ClusterRole includes
+list/get/create/update/delete on ClusterRoleBindings for this reconciliation.
+That role already holds `bind` and `escalate` on ClusterRoles, so the binding
+verbs add no effective authority. Discovery updates the ManifestWork for existing
+MCE spokes automatically. Do not edit the discovery-owned ManifestWork: discovery
+reconciles its spec.
 
 Missing roles (including exempt roles), unsafe non-exempt roles, ownership collisions,
 and insufficient API permissions result
