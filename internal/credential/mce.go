@@ -32,6 +32,7 @@ import (
 )
 
 const (
+	lets = "trigger the alert e2e test"
 	// MCE proxy service constants
 	mceProxyServiceName = "cluster-proxy-addon-user"
 	mceProxyPortName    = "user-port"
