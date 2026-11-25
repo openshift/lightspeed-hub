@@ -149,10 +149,15 @@ spec:
         # The go-toolset image used below has Go, git, make and curl but no oc. Steps share
         # /workspace, so copy the client from the OpenShift CLI image. kubectl is the same
         # binary (used by the agentic operator's make deploy).
+        # This step runs as root: it also opens up /workspace/artifacts, which Tekton creates at
+        # pod start (UID 65532, mode 0755) because it is push-artifacts' workingDir; the
+        # non-root setup-and-test step must write its logs there.
         image: registry.redhat.io/openshift4/ose-cli-rhel9:v4.22
         script: |
           #!/usr/bin/env bash
           set -euo pipefail
+          mkdir -p /workspace/artifacts
+          chmod 0777 /workspace/artifacts
           mkdir -p /workspace/bin
           cp "$(command -v oc)" /workspace/bin/oc
           cp "$(command -v oc)" /workspace/bin/kubectl
