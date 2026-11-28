@@ -20,7 +20,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+type SpokeAgentRBAC struct {
+	// AdditionalClusterRoles adds existing spoke reader roles to fleet defaults.
+	// +optional
+	AdditionalClusterRoles []ClusterRoleName `json:"additionalClusterRoles,omitempty"`
+}
+
 type SpokeClusterSpec struct {
+	// +optional
+	AgentRBAC *SpokeAgentRBAC `json:"agentRBAC,omitempty"`
+
 	// +kubebuilder:validation:MinLength=1
 	APIServer string `json:"apiServer"`
 

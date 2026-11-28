@@ -410,9 +410,16 @@ func (r *MCEDiscoveryReconciler) ensureMSARBAC(ctx context.Context, managedClust
 				"resources": []interface{}{"clusterroles", "roles"},
 				"verbs":     []interface{}{"create", "get", "update", "delete", "bind", "escalate"},
 			},
+			// Baseline reader bindings are reconciled by ownership label: list
+			// finds obsolete owned bindings and update repairs subject drift.
 			map[string]interface{}{
 				"apiGroups": []interface{}{"rbac.authorization.k8s.io"},
-				"resources": []interface{}{"clusterrolebindings", "rolebindings"},
+				"resources": []interface{}{"clusterrolebindings"},
+				"verbs":     []interface{}{"create", "get", "list", "update", "delete"},
+			},
+			map[string]interface{}{
+				"apiGroups": []interface{}{"rbac.authorization.k8s.io"},
+				"resources": []interface{}{"rolebindings"},
 				"verbs":     []interface{}{"create", "get", "delete"},
 			},
 			map[string]interface{}{

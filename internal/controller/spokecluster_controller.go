@@ -223,7 +223,11 @@ func (r *SpokeClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err != nil {
 		return r.failWithCondition(ctx, &sc, conditionTypeProvisioned, reasonProvisioningFailed, fmt.Errorf("%w: %w", ErrCreatingSpokeClient, err))
 	}
-	if err := provisioner.Provision(ctx, spokeClient); err != nil {
+	roles, err := provisioner.ResolveReaderRoles(&hubConfig, &sc)
+	if err != nil {
+		return r.failWithCondition(ctx, &sc, conditionTypeProvisioned, reasonProvisioningFailed, err)
+	}
+	if err := provisioner.Provision(ctx, spokeClient, sc.UID, roles); err != nil {
 		log.Error(err, "Failed to provision spoke", "spoke", sc.Name)
 		return r.failWithCondition(ctx, &sc, conditionTypeProvisioned, reasonProvisioningFailed, err)
 	}
@@ -341,7 +345,7 @@ func (r *SpokeClusterReconciler) cleanupSpokeResources(ctx context.Context, sc *
 						logger.Error(err, "Failed to deprovision adapter resources")
 						spokeCleanupFailed = true
 					}
-					if err := provisioner.Deprovision(ctx, spokeClient, logger); err != nil {
+					if err := provisioner.Deprovision(ctx, spokeClient, logger, sc.UID); err != nil {
 						logger.Error(err, "Failed to deprovision spoke resources")
 						spokeCleanupFailed = true
 					}

@@ -382,6 +382,7 @@ var _ = Describe("MCEDiscoveryReconciler", func() {
 
 	It("should update SpokeCluster API server when ManagedCluster URL changes", func() {
 		existingSpoke := discoverySpoke("spoke-1", "https://old-api.spoke-1.example.com:6443")
+		existingSpoke.Spec.AgentRBAC = &hubv1alpha1.SpokeAgentRBAC{AdditionalClusterRoles: []hubv1alpha1.ClusterRoleName{"custom-reader"}}
 		mc := managedCluster("spoke-1", "https://new-api.spoke-1.example.com:6443", nil)
 		hc := mceHubConfigWithSelector(nil)
 
@@ -403,6 +404,7 @@ var _ = Describe("MCEDiscoveryReconciler", func() {
 		var sc hubv1alpha1.SpokeCluster
 		Expect(hubClient.Get(ctx, types.NamespacedName{Name: "spoke-1"}, &sc)).To(Succeed())
 		Expect(sc.Spec.APIServer).To(Equal("https://new-api.spoke-1.example.com:6443"))
+		Expect(sc.Spec.AgentRBAC).To(Equal(existingSpoke.Spec.AgentRBAC))
 	})
 
 	It("should not create SpokeCluster when name collides with manual CR", func() {

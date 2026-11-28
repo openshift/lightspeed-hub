@@ -50,6 +50,32 @@ kind create cluster --name "$HUB"    --kubeconfig "$HUB_KC"
 kind create cluster --name "$SPOKE1" --kubeconfig "$SPOKE1_EXT"
 kind create cluster --name "$SPOKE2" --kubeconfig "$SPOKE2_EXT"
 
+# The hub's default baseline reader roles are OpenShift built-ins that kind lacks.
+# Provisioning fails when a referenced role is missing, so create stand-ins.
+echo "==> Creating OpenShift default reader ClusterRoles on spokes..."
+for SPOKE_KC in "$SPOKE1_EXT" "$SPOKE2_EXT"; do
+  KUBECONFIG="$SPOKE_KC" kubectl apply -f - <<'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-reader
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.authorization.k8s.io/aggregate-to-view: "true"
+rules: []
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-monitoring-view
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+EOF
+done
+
 # Build operator image and load into hub cluster
 echo "==> Building operator image $IMG..."
 IMG="$IMG" make docker-build
